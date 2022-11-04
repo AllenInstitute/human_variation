@@ -1,0 +1,25 @@
+subclass,filename_old,subclass_SEAAD,filename
+Lamp5_Lhx6,Lamp5Lhx6_scANVI.2022-05-18.h5ad,Lamp5 Lhx6,human_var_scVI_Lamp5Lhx6.h5ad
+Lamp5,Lamp5_scANVI.2022-05-18.h5ad,Lamp5,human_var_scVI_Lamp5.h5ad
+Pax6,Pax6_scANVI.2022-05-18.h5ad,Pax6,human_var_scVI_Pax6.h5ad
+Sncg,Sncg_scANVI.2022-05-18.h5ad,Sncg,human_var_scVI_Sncg.h5ad
+Vip,Vip_scANVI.2022-05-18.h5ad,Vip,human_var_scVI_Vip.h5ad
+Sst Chodl,Sst_Chodl_scANVI.2022-05-18.h5ad,Sst Chodl,human_var_scVI_SstChodl.h5ad
+Sst,Sst_scANVI.2022-05-18.h5ad,Sst,human_var_scVI_Sst.h5ad
+Pvalb,Pvalb_scANVI.2022-05-18.h5ad,Pvalb,human_var_scVI_Pvalb.h5ad
+Chandelier,Chandelier_scANVI.2022-05-18.h5ad,Chandelier,human_var_scVI_Chandelier.h5ad
+L2/3 IT,L23IT_scANVI.2022-05-18.h5ad,L2/3 IT,human_var_scVI_L23IT.h5ad
+L4 IT,L4IT_scANVI.2022-05-18.h5ad,L4 IT,human_var_scVI_L4IT.h5ad
+L5 IT,L5IT_scANVI.2022-05-18.h5ad,L5 IT,human_var_scVI_L5IT.h5ad
+L6 IT,L6IT_scANVI.2022-05-18.h5ad,L6 IT,human_var_scVI_L6IT.h5ad
+L6 IT Car3,L6ITCar3_scANVI.2022-05-18.h5ad,L6 IT Car3,human_var_scVI_L6ITCar3.h5ad
+L5 ET,L5ET_scANVI.2022-05-18.h5ad,L5 ET,human_var_scVI_L5ET.h5ad
+L6 CT,L6CT_scANVI.2022-05-18.h5ad,L6 CT,human_var_scVI_L6CT.h5ad
+L6b,L6b_scANVI.2022-05-18.h5ad,L6b,human_var_scVI_L6b.h5ad
+L5/6 NP,L56NP_scANVI.2022-05-18.h5ad,L5/6 NP,human_var_scVI_L56NP.h5ad
+Astro,Astro_scANVI.2022-05-18.h5ad,Astrocyte,human_var_scVI_Astro_clean.h5ad
+OPC,OPC_scANVI.2022-05-18.h5ad,OPC,human_var_scVI_OPC_clean.h5ad
+Oligo,Oligo_scANVI.2022-05-18.h5ad,Oligodendrocyte,human_var_scVI_Oligo_clean.h5ad
+Endo,Endo_scANVI.2022-05-18.h5ad,Endothelial,human_var_scVI_Endo_clean.h5ad
+VLMC,VLMC_scANVI.2022-05-18.h5ad,VLMC,human_var_scVI_VLMC.h5ad
+Micro-PVM,MicroPVM_scANVI.2022-05-18.h5ad,Microglia-PVM,human_var_scVI_MicroPVM_clean.h5ad

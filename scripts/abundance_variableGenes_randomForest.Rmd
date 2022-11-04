@@ -1,0 +1,1339 @@
+---
+title: "R scripts for Inter-individual genomic and transcriptomic variation [...]"
+author: "Jeremy Miller"
+date: "October 2022"
+output: html_notebook
+---
+  
+## Overview
+  
+This notebook includes script for generating some of the figures and supplemental figures for the manuscript: "Inter-individual genomic and transcriptomic variation in human cortical cell types" [(bioRxiv link)](https://www.biorxiv.org/content/10.1101/2022.10.07.511366v1.full).  
+  
+Prior to running this script please perform the following steps:  
+1. Return to the GitHub repository where you downloaded this script [(GitHub link)](https://github.com/AllenInstitute/human_variation/).  
+2. Download the "scripts" and input_files" folders and their context to your working directory.  
+3. Download all of the subclass-level h5ad files from CELLxGENE to a "data_files" subfolder.  The link to the correct CELLxGENE instance can be found at the same [(GitHub link)](https://github.com/AllenInstitute/human_variation/) above.  When you are done, the files in "data_files" should correspond to the files listed in the "filename" columan of subclass_order.csv".  If not, please update the file names in this column to match.  
+4. If needed set the working directory:  (e.g., `setwd("PATH_TO_DIRECTORY/ouput_files/")`).  (This should happen automatically, but sometimes it doesn't work properly unless you manually set it).  
+  
+Once the above is complete, run this script from a powerful machine (I am running RStudio on a Linux box with 128 GB of memory).  Specifically, this script performs analysis associated with figures 1E, 2A-B, 2D-F, S2, S3, S4, S5, and S6, and with a few points not related to figure panels.  
+  
+## Prepare the data  
+  
+First load the required libraries and options and set directory locations.  
+  
+```{r load_libraries, warning=FALSE}
+## Load libraries
+suppressPackageStartupMessages({
+  library(Seurat)       # For data storage and analysis
+  library(zellkonverter)# For reading h5ad files
+  library(WGCNA)        # Used for generating several plots
+  library(SingleCellExperiment)  # Required for loading data
+  library(fgsea)        # Quick GO enrichment test
+  library(randomForest) # Random forest prediction
+  library(pheatmap)     # Nice plotting function
+  library(extraDistr)   # for multivariate hypergeometric distribution
+  library(ggplotify)    # For converting regular plots to ggplots to save
+  library(ggplot2)      # For plotting and saving plots
+  library(collapse)     # Optional: For calculating variance faster (commented options for not using this) # should replace findFromGroups
+  library(dplyr)
+  library(tidyr)
+})
+options(stringsAsFactors=FALSE)
+options(future.globals.maxSize = 32000 * 1024^2) # NOTE the large amount of memory required for running these script!
+options(future.rng.onMisuse="ignore")
+
+if(!file.exists("output_files")) dir.create("output_files")
+
+# NOTE: REPLACE THE LINE BELOW WITH YOUR CURRENT WORKING DIRECTORY
+workingFolder <- "/allen/programs/celltypes/workgroups/hct/HCT_RNAseq/Jeremy/Alzheimers_disease/human_variation_study_manuscript/for_upload/"
+
+inputFolder   <- paste0(workingFolder,"input_files/")
+outputFolder  <- paste0(workingFolder,"output_files/")
+scriptFolder  <- paste0(workingFolder,"scripts/")
+dataFolder    <- "/allen/programs/celltypes/workgroups/hct/NelsonJ/Human_variation/celltype_h5ad/leiden_scVI_with_ref/" # replace with  paste0(workingFolder,"data_files/")
+  
+## Extra functions to limit library loading
+source(paste0(scriptFolder,"extra_functions.r"))
+
+setwd(outputFolder)
+```
+  
+```{r setup, include=FALSE}
+outputFolder  <- paste0(workingFolder,"output_files/")
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/allen/programs/celltypes/workgroups/hct/HCT_RNAseq/Jeremy/Alzheimers_disease/human_variation_study_manuscript/for_upload/output_files/")
+```
+  
+Next, load the all of the relevant data and metadata from the project from the h5ad files and update metadata file, and save results as subclass-level Seurat objects.  
+  
+```{r load HVS FACS data}
+## Folder/file setup
+subclass_files <- read.csv(paste0(inputFolder,"subclass_order.csv"))
+subclasses <- subclass_files$subclass
+files <- setNames(paste0(dataFolder,subclass_files$filename),subclasses)
+
+## Read in subclass and cell type colors
+type_info <- read.csv(paste0(inputFolder,"cluster_order_and_colors.csv"))
+type_info$subclass_label <- subclass_files$subclass[match(type_info$subclass_label,subclass_files$subclass_SEAAD)]
+subclass_colors <- setNames(type_info$subclass_color[match(subclasses,type_info$subclass_label)],subclasses)
+
+## Read in the data, piping the warnings to a file
+datAll <- list()
+zz <- file("all.txt", open="wt") # Send warning messages to a file so avoid crashing R
+sink(zz, type="message")
+## Read in all of the data
+for (s in subclasses){
+  print(s)
+  tmp <- readH5AD(files[s])
+  seu <- CreateSeuratObject(counts=assay(tmp,"UMIs"))
+  met <- as.data.frame(colData(tmp))
+  seu <- SetAssayData(seu,new.data=logCPM(seu@assays$RNA@counts),slot="data")
+  #seu <- SetAssayData(seu,new.data=assay(tmp,"scvi_normalized"),slot="scale.data") # Not used
+  seu <- AddMetaData(seu,met)
+  datAll[[s]] <- seu
+}
+sink(type="message")
+close(zz)
+a=file.remove("all.txt")
+```  
+  
+  
+Update metadata and QC filtering (keep all cells with exclude2=No + QC2 =TRUE).  Also exclude donors not part of this study.  
+  
+```{r donor metadata}
+## Read in the donor metadata
+donor_columns  <- c("ROI","Sex","Age","Disease","Tissue.Source", "Ancestry")
+donor_metadata <- read.csv(paste0(inputFolder,"human_variation_file_manifest_220624.csv"), row.names = 1)
+control_donors <- c("H18.30.002", "H19.30.002", "H200.1023", "H18.30.001", "H19.30.001")
+hvs_donors     <- rownames(donor_metadata)[donor_metadata$use]  # Note the lower-case "u" in "use".  In this case, all of the rows either correspond to the patients undergoing neurosurgery that are part of this study, or the five control donors listed above.
+donor_metadata <- donor_metadata[,donor_columns]
+donors         <- c(hvs_donors,control_donors)
+
+## Update the metadata 
+for (s in subclasses){
+  temp_metadata <- donor_metadata[datAll[[s]]@meta.data$donor_name,]
+  for (col in donor_columns)
+    datAll[[s]] <- AddMetaData(datAll[[s]],temp_metadata[,col],col)
+  datAll[[s]]@meta.data$exclude2[is.na(datAll[[s]]@meta.data$exclude2)] = "No"
+  qc_pass       <- (datAll[[s]]@meta.data$exclude2=="No")&(datAll[[s]]@meta.data$QC2_metacell_class_flag!="False") 
+  qc_pass       <- qc_pass|is.element(datAll[[s]]$donor_name,control_donors)
+  datAll[[s]]   <- AddMetaData(datAll[[s]],qc_pass,"qc_pass")
+  datAll[[s]]   <- datAll[[s]][,is.element(datAll[[s]]$donor_name,donors)&qc_pass]  
+}
+```
+  
+At this point, all remaining cells and donors in the data set have passed QC and will be used for the remainder of the analyses.  
+  
+  
+## Comparison of genes expressed and abundances
+  
+This section performs a variety of analyses related to overall gene expression levels (e.g., number of genes expressed per donor) and cell type abundances (e.g., number of cells mapped to each subclass for each donor). We start by calculating the abundance variance across donor, and scale by class.  We'll also look at the number of genes with expression in at least 25% of cells for a given cell type per donor (e.g., trimmed means > 0).  
+  
+Let's set up variables in this section.  
+  
+```{r genes and abundance setup}
+# Get gene and cell counts per subclass
+geneCounts <- cellCounts <- NULL
+tmeanExpr  <- list()
+for (s in subclasses){
+  print(s)
+  dons  <- factor(as.character(datAll[[s]]$donor_name),levels=donors)
+  cells <- table(dons)
+  cellCounts <- cbind(cellCounts,cells)
+  tmeanExpr[[s]] <- findFromGroups(datAll[[s]]@assays$RNA@data,dons,tmean) # collapse package has faster mean and median, but not trimmed mean
+  geneCounts <- cbind(geneCounts,as.numeric(colSums(tmeanExpr[[s]]>0)))
+}
+colnames(geneCounts) <- colnames(cellCounts) <- subclasses
+geneCounts[geneCounts==0] = NA
+rownames(geneCounts) <- rownames(cellCounts)
+
+# Set up variables for scaling to class
+classes <- c("GABAergic","Glutamatergic","Non-neuronal")
+cellClass <- matrix(0,nrow=dim(geneCounts)[1],ncol=3)
+colnames(cellClass) <- classes
+rownames(cellClass) <- rownames(geneCounts)
+umiClass <- genesClass <- cellClass
+classGroups <- list(subclasses[1:9],subclasses[10:18],subclasses[19:24])
+names(classGroups) <- classes
+
+# Get cell counts per subclass
+cellCountsN <- cellCounts*0
+for (l in donors){
+  for (cl in classes){
+    kp <- is.element(subclasses,classGroups[[cl]])
+    cellCountsN[l,classGroups[[cl]]] <- cellCounts[l,classGroups[[cl]]]/sum(cellCounts[l,classGroups[[cl]]])
+  }
+}
+```
+  
+  
+### Statistics by donor
+  
+Plot variation in abundances across donors by subclass.  
+
+```{r abundance values, fig.height=6,fig.width=8}
+library(knitr)
+print(opts_current$get()$label)
+vectorAbundance <- unlist(data.frame(cellCountsN[hvs_donors,]))
+vectorSubclass  <- NULL
+for (s in subclasses) vectorSubclass <- c(vectorSubclass,rep(s,length(hvs_donors)))
+vectorCols <- type_info$subclass_color[match(vectorSubclass,type_info$subclass_label)]
+vectorSubclass <- factor(vectorSubclass,levels=subclasses)
+
+plt <- as.ggplot(function(){
+par(mar=c(10,5,5,5))
+verboseBarplot(100*vectorAbundance+1,vectorSubclass,main="",ylab="Abundance",xlab="", ylim = c(0,100),
+                 addScatterplot = TRUE, pch=19, pt.cex=0.5, pt.col = vectorCols, las=2, col="white")
+})
+plt
+ggsave("abundance_barplots.pdf", plot=plt, height = 6, width = 8)
+```
+  
+Since abundance values are inherently related (e.g., increase in OPCs means decrease in other glia by definition) it is useful to see how these proportions are correlated across donors.  Let's perform this analysis.  
+  
+```{r correlate subclass abundances, fig.height=5.5, fig.width=6}
+abundanceCor <- cor(cellCountsN[hvs_donors,])
+ab = pheatmap(abundanceCor)#,cluster_cols = FALSE, cluster_rows = FALSE)
+ab
+ggsave("abundance_subclass_correlations.pdf", plot=ab, height = 5.5, width = 6)
+```
+
+  
+Plot variation in gene counts across donors by subclass.  
+
+```{r genes counts values, fig.height=6,fig.width=8}
+vectorGenes <- unlist(data.frame(geneCounts[hvs_donors,]))
+
+plt <- as.ggplot(function(){
+par(mar=c(10,5,5,5))
+verboseBarplot(vectorGenes/1000,vectorSubclass,main="",ylab="Genes expressed (K)",xlab="",ylim=c(0,15),
+               addScatterplot = TRUE, pch=19, pt.cex=0.5, pt.col = vectorCols, las=2, col="white")
+})
+plt
+ggsave("gene_counts_barplots.pdf", plot=plt, height = 6, width = 8)
+```
+  
+For a few donors, the number of genes expressed in non-neuronal cells is exceptionally high, likely reflecting some issues in QCing doublets or mapping.  For now, let's not worry about this.    
+  
+  
+### Statistics by disease  
+  
+Let's now look at cell type abundances and gene counts when comparing epilepsy vs. tumor.  
+  
+```{r cell type abundances normalized by disease, fig.height=8,fig.width=10}
+# Exclude two donors with both conditions
+kp_donors <- intersect(hvs_donors,rownames(donor_metadata)[is.element(donor_metadata$Disease,c("Epilepsy","Tumor"))])
+allGroup  <- factor(donor_metadata[kp_donors,"Disease"],levels = c("Epilepsy","Tumor"))
+
+# Make plots
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,4,2,1))
+for (s in subclasses)
+  verboseBarplot(cellCountsN[kp_donors,s],allGroup,main="",ylab=s,pt.col=subclass_colors[s],col="white",
+                 xlab="",ylim=c(0,max(cellCountsN[kp_donors,s])*1.02),
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 0.7, cex.main = 1)
+})
+plt
+ggsave("abundance_barplots_by_subclass.pdf", plot=plt, height = 8, width = 10)
+```
+  
+The only significant difference is a decrease in PVALB+ interneurons in epilepsy cases, which makes complete sense!  
+  
+Next we compare the number of genes expressed per subclass in epilepsy vs. tumor.  
+
+```{r genes detected per cell by disease, fig.height=8,fig.width=10}
+# Make plots
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,4,2,1))
+for (s in subclasses)
+  verboseBarplot(geneCounts[kp_donors,s]/1000,allGroup,main="",ylab=paste(s,"(thousands)"),xlab="", 
+                 ylim = c(0,15),pt.col=subclass_colors[s],col="white",
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 0.7, cex.main = 1)
+})
+plt
+ggsave("geneCount_barplots_by_subclass.pdf", plot=plt, height = 8, width = 10)
+```
+  
+There is no difference between tumor and epilepsy at this level.  
+  
+  
+### Statistics by sex  
+  
+Now let's see if there are any differences in abundance of gene expression in males vs. females.  
+  
+```{r cell type abundances and gene expression normalized by sex, fig.height=8,fig.width=10}
+mfGroup  <- factor(donor_metadata[hvs_donors,"Sex"])
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,4,2,1))
+for (s in subclasses)
+  verboseBarplot(cellCountsN[hvs_donors,s],mfGroup,main="",ylab=s,pt.col=subclass_colors[s],
+                 xlab="",ylim=c(0,max(cellCountsN[hvs_donors,s])*1.02),col="white",
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 0.7, cex.main = 1)
+})
+plt
+ggsave("abundance_barplots_by_sex.pdf", plot=plt, height = 8, width = 10)
+
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,4,2,1))
+for (s in subclasses)
+  verboseBarplot(geneCounts[hvs_donors,s]/1000,mfGroup,main="",ylab=paste(s,"(thousands)"),xlab="", 
+                 ylim = c(0,15),pt.col=subclass_colors[s],col="white",
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 0.7, cex.main = 1)
+})
+plt
+ggsave("geneCount_barplots_by_sex.pdf", plot=plt, height = 8, width = 10)
+```
+  
+No significant differences by sex.  
+  
+  
+### Statistics by Age  
+  
+Now let's see if there are any differences in abundance of gene expression by age.  
+  
+```{r cell type abundances and gene expression normalized by age, fig.height=8,fig.width=18}
+ageVector  <- as.numeric(donor_metadata[hvs_donors,"Age"])
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,4,2,1))
+for (s in subclasses)
+  verboseScatterplot(ageVector,cellCountsN[hvs_donors,s],main="",ylab=s,
+                 xlab="",ylim=c(0,max(cellCountsN[hvs_donors,s])*1.02),col=subclass_colors[s],
+                 pch=19, cex.lab=1.1, cex.axis = 0.8, cex.main = 1.25, abline=TRUE)
+})
+plt
+ggsave("abundance_scatterplots_by_Age.pdf", plot=plt, height = 8, width = 18)
+
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,4,2,1))
+for (s in subclasses)
+  verboseScatterplot(ageVector,geneCounts[hvs_donors,s]/1000,main="",ylab=s,
+                 xlab="",ylim=c(0,15),col=subclass_colors[s],
+                 pch=19, cex.lab=1.1, cex.axis = 0.8, cex.main = 1.25, abline=TRUE)
+})
+plt
+ggsave("geneCount_scatterplots_by_Age.pdf", plot=plt, height = 8, width = 18)
+```
+  
+### Statistics by ROI  
+  
+Now let's see if there are any differences in abundance of gene expression by brain region.  
+  
+```{r cell type abundances and gene expression normalized by ROI, fig.height=8,fig.width=14}
+roiGroup  <- factor(donor_metadata[hvs_donors,"ROI"])
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,4,2,1))
+for (s in subclasses)
+  verboseBarplot(cellCountsN[hvs_donors,s],roiGroup,main="",ylab=s,
+                 xlab="",ylim=c(0,max(cellCountsN[hvs_donors,s])*1.02),pt.col=subclass_colors[s],col="white",
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 0.7, cex.main = 1.5)
+})
+plt
+ggsave("abundance_barplots_by_ROI.pdf", plot=plt, height = 8, width = 14)
+
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,4,2,1))
+for (s in subclasses)
+  verboseBarplot(geneCounts[hvs_donors,s]/1000,roiGroup,main="",ylab=paste(s,"(thousands)"),xlab="",
+                 ylim = c(0,15),pt.col=subclass_colors[s],col="white",
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 0.7, cex.main = 1.5)
+})
+plt
+ggsave("geneCount_barplots_by_ROI.pdf", plot=plt, height = 8, width = 14)
+```
+  
+There are fairly substantial changes in abundances across brain regions, most notably in Pvalb interneurons, which are more prominent in frontal than temporal cortex.  Does our abundance result with respect to disease hold when only considering MTG tissue?  
+  
+```{r cell type abundances normalized by disease in MTG, fig.height=8,fig.width=10}
+# Exclude two donors with both conditions
+kp_donors2 <- intersect(kp_donors,rownames(donor_metadata)[donor_metadata$ROI=="MTG"])
+allGroup2  <- factor(donor_metadata[kp_donors2,"Disease"],levels = c("Epilepsy","Tumor"))
+
+# Make plots
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,4,2,1))
+for (s in subclasses)
+  verboseBarplot(cellCountsN[kp_donors2,s],allGroup2,main="",ylab=s,pt.col=subclass_colors[s],
+                 xlab="",ylim=c(0,max(cellCountsN[kp_donors2,s])*1.02),col="white",
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 0.7, cex.main = 1)
+})
+plt
+ggsave("abundance_barplots_by_disease.pdf", plot=plt, height = 8, width = 10)
+```
+  
+  
+Much of the difference seems to be explained by region.  Let's explicitly test this using a linear model.  
+  
+```{r linear model abundances}
+kp_donors3 <- intersect(kp_donors,intersect(kp_donors,rownames(donor_metadata)[donor_metadata$ROI!="PCx"]))
+
+lm_pval_apply <- function(x){
+  dat   <- data.frame(donor_metadata[kp_donors3,],Abundance = x)
+  lmOut <- lm(Abundance~Disease+ROI+Sex+Tissue.Source+Age, data = dat)
+  summary(lmOut)$coefficients[2:dim(summary(lmOut)$coefficients)[1],4]
+}
+
+cn <- c("Disease","ROI","Sex","Tissue.Source","Age")
+lm_pval <- apply(cellCountsN[kp_donors3,],2,lm_pval_apply)
+data.frame(t(lm_pval))
+rownames(lm_pval) <- cn
+lm_pval_adjust <- apply(lm_pval,2,p.adjust)  # FDR corrected
+data.frame(t(lm_pval_adjust))
+```
+  
+  
+After accounting for Sex and ROI, Pvalb interneurons show decreased abundance in epilepsy cases and L5 ET neurons show decreased abundance in tumor cases.  Several cell types show abundance difference with respect to ROI (in principle, we could match this with the cross-areal study).  
+  
+Plot these.  
+  
+```{r plot significant types,fig.height=4,fig.width=7}
+allGroupsDR <- paste(donor_metadata[kp_donors3,"ROI"],substr(donor_metadata[kp_donors3,"Disease"],1,2),sep=":")
+
+# Make plots
+plt <- as.ggplot(function(){
+par(mfrow=c(1,4))
+par(mar=c(10,3,7,1))
+for (s in c("Pvalb", "L5 ET", "L4 IT", "L6b"))
+  verboseBarplot(cellCountsN[kp_donors3,s],allGroupsDR,main=s,ylab="",KruskalTest = FALSE,col="white",
+                 xlab="",ylim=c(0,max(cellCountsN[kp_donors3,s])*1.1), las=2, pt.col=subclass_colors[s],
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1.5, cex.axis = 0.7, cex.main = 1.5)
+})
+plt
+ggsave("select_abundance_barplots_by_disease_and_region.pdf", plot=plt, height = 4, width = 7)
+```
+  
+  
+For completeness, let's try the same thing with genes expressed.  
+  
+```{r linear model genes}
+lm_pvalG <- apply(geneCounts[kp_donors3,],2,lm_pval_apply)
+data.frame(t(lm_pvalG))
+rownames(lm_pvalG) <- cn
+lm_pval_adjustG <- apply(lm_pvalG,2,p.adjust)  # FDR corrected
+data.frame(t(lm_pval_adjustG))
+```
+  
+No significant differences.  
+  
+  
+### Abundances and gene counts by class  
+  
+For abundances let's look at E/I ratios, since the fraction of non-neuronal cells was set based on FACS.  
+  
+```{r abundance by class,fig.height=5,fig.width=8}
+EI <- NULL
+for (l in hvs_donors)
+  EI <- c(EI,sum(cellCounts[l,classGroups[[2]]])/sum(cellCounts[l,classGroups[[1]]]))
+names(EI) <- hvs_donors
+
+dat   <- data.frame(donor_metadata[kp_donors3,cn],Abundance = EI[kp_donors3])
+lmOut <- lm(Abundance~Disease+ROI+Sex, data = dat) 
+summary(lmOut)$coefficients
+
+# Make plots
+plt <- as.ggplot(function(){
+par(mfrow=c(1,2))
+par(mar=c(8,4,8,1))
+verboseBarplot(EI[kp_donors3],allGroupsDR,main="",ylab="E/I ratio", xlab="",ylim=c(0,5),
+               addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 1, 
+               cex.main = 1, pt.col = "black", col="white")
+set.seed(3)
+plot(x=jitter(rep(0,length(EI))), EI, main="",ylab="E/I ratio",ylim=c(0,5),pch=19, 
+     xlab="",cex.lab=1, xlim=c(-0.022,0.3))
+abline(h=0)
+})
+plt
+ggsave("EI_ratio_plots.pdf", plot=plt, height = 6, width = 8)
+```
+
+No difference in E/I ratio with respect to these donor metadata. 
+  
+For genes expressed, we'll define a gene as expressed in a class if it is expressed in at least one subclass  
+  
+```{r gene expression by class,fig.height=4,fig.width=9}
+plt <- as.ggplot(function(){
+par(mfrow=c(1,3))
+gexL <- list()
+for (cl in names(classGroups)){
+  subs <- classGroups[[cl]]
+  tme  <- tmeanExpr[[subs[1]]][,donors]
+  tme[is.na(tme)] <- 0
+  for (s in subs) {
+    tme2 <- tmeanExpr[[s]][,donors]
+    tme2[is.na(tme2)] <- 0
+    tme  <- tme+tme2
+  }
+  gex <- gexL[[cl]] <- as.numeric(colSums(tme>0))
+  
+  # Make plots
+  par(mar=c(8,4,6,1))
+  kp <- match(kp_donors3,donors)
+  verboseBarplot(gex[kp]/1000,allGroupsDR,main="",ylab=paste(cl,"(thousands)"),xlab="",ylim=c(0,18),
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 1, cex.main = 1,
+                 col="white",pt.col=type_info$class_color[grep(cl,type_info$class_label)[1]])
+}
+})
+plt
+ggsave("geneCount_by_class_barplots.pdf", plot=plt, height = 6, width = 8)
+```
+  
+No gene differences at the class level either.  
+  
+  
+## Neurosurgical vs. postmortem comparisons
+  
+In this section we'll assess subclass variation in neurosurgical tissue and compare it to reference data... for which tissue source is it higher?  How does it differ by subclass?  For this analysis we limit ourselves to the 45 HVS donors with epilepsy from MTG to decrease variation associated with donor metadata and try to focus mostly on neurosurgical vs. postmortem (which is also MTG).  We will use two methods for defining variation: (1) coefficient of variation (sd/mean) and (2) interquartile range / median.  In both cases the idea is to define the spread of the distributions.  Note that we only have three donors with cells collected from all layers using the same experimental strategy, H18.30.002, H19.30.001 and H19.30.002 , and so we will only look at these three for abundance assessments
+  
+```{r define per subclass variance}
+control_donors2 <- c("H18.30.002","H19.30.001","H19.30.002")
+ns_counts  <- cellCountsN[hvs_donors,][(donor_metadata[hvs_donors,]$ROI=="MTG")&
+                                       (donor_metadata[hvs_donors,]$Disease=="Epilepsy"),]
+mtg_ep_donors <- rownames(ns_counts)
+pm_counts  <- cellCountsN[control_donors2,]
+
+ns_mean <- apply(ns_counts,2,mean,na.rm=TRUE)
+pm_mean <- apply(pm_counts,2,mean,na.rm=TRUE)
+ns_COV  <- apply(ns_counts,2,sd,na.rm=TRUE)/ns_mean
+pm_COV  <- apply(pm_counts,2,sd,na.rm=TRUE)/pm_mean
+ns_IQR  <- apply(ns_counts,2,IQR,na.rm=TRUE)/apply(ns_counts,2,median,na.rm=TRUE)
+pm_IQR  <- apply(pm_counts,2,IQR,na.rm=TRUE)/apply(pm_counts,2,median,na.rm=TRUE)
+```
+  
+  
+Now let's plot the results.  
+  
+```{r plot variation comparison, fig.height=12,fig.width=10}
+# NOTE: I might need to manually adjust the xlim and ylim values below
+plot_tmp <- function(x,y,s,text.col="black",xlab="Post mortem controls",ylab="Neurosurgical (MTG, epilepsy)", xyline=TRUE, ...){
+  verboseScatterplot(x,y,col="white",xlab=xlab,ylab=ylab,...)
+  if(xyline) abline(0,1,col="grey",lty="dashed")
+  text(x,y,s,col=text.col)
+}
+
+plt <- as.ggplot(function(){
+par(mfrow=c(2,2))
+plot_tmp(pm_mean,ns_mean,subclasses,subclass_colors,main="mean",log="xy",xlim=c(0.0025,0.6),ylim=c(0.0025,0.6))
+plot_tmp(pm_COV,ns_COV,subclasses,subclass_colors,main="COV",log="xy",xlim=c(0.05,2.5),ylim=c(0.05,2.5))
+plot_tmp(pm_IQR,ns_IQR,subclasses,subclass_colors,main="IQR/median",log="xy",xlim=c(0.05,6),ylim=c(0.05,6))
+plot_tmp(ns_mean,ns_COV,subclasses,subclass_colors,main="PM",xlab="Mean abundance (NS)",
+         ylab="COV abundance (NS)",xlim=c(-0.05,0.6),ylim=c(0,2), xyline=FALSE)
+abline(v=0); abline(h=0)
+})
+plt
+ggsave("variance_comparison_NSvsPM.pdf", plot=plt, height = 12, width = 10)
+```
+  
+Overall, good agreement in NS vs. PM, especially for mean expression. L6 IT Car3 is an outlier on variance, likely since there are only 3 control donors. I don’t think we can really trust variance calls in our NS data in general, especially since we don’t find any correlation between NS and PM when we include the remaining two donors for neurons only. Interestingly, relative to their mean abundances, non-neurons have higher COV than neurons.  
+  
+Now let's visualize this by subclass.  
+  
+```{r postmortem vs neurosurgical abundance, fig.height=8,fig.width=10}
+countsME <- rbind(pm_counts,ns_counts)
+
+cat <- factor(c(rep("PM",dim(pm_counts)[1]),rep("NS",dim(ns_counts)[1])),levels=c("PM","NS"))
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,5,2,0))
+for (s in subclasses)
+  verboseBarplot(countsME[,s],cat,main="",ylab=s,xlab="", 
+                 ylim = c(0,max(countsME[,s])),col="white",pt.col = subclass_colors[s],
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 1, cex.main = 1)
+})
+plt
+ggsave("abundance_barplots_by_NSvsPM.pdf", plot=plt, height = 8, width = 10)
+```
+  
+Now let's revisit gene expression changes.  We can compare gene expression differences and see how these relate to what we published in Hodge et al 2019 (for L5 only).  Let's first plot the number of genes expressed per class in postmortem vs. neurosurgical, considering on MTG donors.  
+  
+```{r postmortem vs neurosurgical genes, fig.height=8,fig.width=10}
+geneCountsME <- geneCounts[c(control_donors2,mtg_ep_donors),]
+
+cat <- factor(c(rep("PM",length(control_donors2)),rep("NS",length(mtg_ep_donors))),levels=c("PM","NS"))
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,5,2,0))
+for (s in subclasses)
+  verboseBarplot(geneCountsME[,s]/1000,cat,main="",ylab=paste(s,"(thousands)"),xlab="", 
+                 ylim = c(0,15),col="white",pt.col = subclass_colors[s],
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 1, cex.main = 1)
+})
+plt
+ggsave("geneCounts_barplots_by_NSvsPM.pdf", plot=plt, height = 8, width = 10)
+```
+  
+Some glial cell types have more genes expressed in neurosurgical than postmortem cases, although I expect this is probably an issue with QC, rather than a real result.  Otherwise, there are comparable genes expressed in the reference and in neurosurgical tissue.  Let's plot this more compactly for inclusion in a supplemental figure.  
+  
+```{r genes in PM vs. NS, fig.height=5,fig.width=11}
+df     = data.frame(X=colMeans(geneCountsME[cat=="PM",],na.rm=TRUE),errX=apply(geneCountsME[cat=="PM",],2,sd,na.rm=TRUE),
+                    Y=colMeans(geneCountsME[cat=="NS",],na.rm=TRUE),errY=apply(geneCountsME[cat=="NS",],2,sd,na.rm=TRUE))/1000
+rangeX = range(c(df$X + df$errX, df$X - df$errX))
+rangeY = range(c(df$Y + df$errY, df$Y - df$errY))
+
+plt <- as.ggplot(function(){
+par(mfrow=c(1,2))
+plot(df$X, df$Y, xlim = rangeX, ylim = rangeY,xlab="Genes detected (thousands, postmortem)",
+     ylab="Genes detected (thousands, neurosurgical)",pch=19,cex=2,col=subclass_colors)
+segments(df$X, df$Y - df$errY, df$X, df$Y + df$errY,col=subclass_colors)
+segments(df$X - df$errX, df$Y, df$X + df$errX, df$Y,col=subclass_colors)
+abline(0,1,col="grey")
+
+verboseScatterplot(df$X, df$Y, xlim = rangeX, ylim = rangeY,xlab="Genes detected (thousands, postmortem)",
+     ylab="Genes detected (thousands, neurosurgical)",pch=19,cex=0.25,col=subclass_colors)
+segments(df$X, df$Y - df$errY, df$X, df$Y + df$errY,col=subclass_colors)
+segments(df$X - df$errX, df$Y, df$X + df$errX, df$Y,col=subclass_colors)
+abline(0,1,col="grey")
+text(df$X, df$Y, subclasses,col=subclass_colors)
+})
+plt
+ggsave("geneCounts_means_scatterplots_by_NSvsPM.pdf", plot=plt, height = 5, width = 11)
+```
+  
+Compare the SDs in neurosurgical vs. postmortem tissues.  
+  
+```{r SD genes detected,fig.height=5,fig.width=2.5}
+x = c(df$errX,df$errY)
+g = c(rep("PM",length(subclasses)),rep("NS",length(subclasses)))
+verboseBarplot(x,g,xlab="",ylab="SD genes detected (thousands)",col="white")
+```
+  
+  
+Let's look specifically at which genes are more highly expressed by source for Pvalb, L5 ET, and L2/3 IT types (the two types with abundance changes and a type with many nuclei and large variation), hopefully somewhat representative of all types.  
+  
+```{r gene comparison scatterplot, fig.height=4,fig.width=18}
+median_expression_CT <- median_expression_NS <- list()
+for (s in subclasses){
+  ct_tmp <- tmeanExpr[[s]][,mtg_ep_donors]
+  ct_tmp[ct_tmp==0] <- NA
+  median_expression_CT[[s]] <- apply(ct_tmp,1,median,na.rm=TRUE)
+  pm_tmp <- tmeanExpr[[s]][,control_donors]
+  pm_tmp[pm_tmp==0] <- NA
+  median_expression_NS[[s]] <- apply(pm_tmp,1,median,na.rm=TRUE)
+}
+
+plt <- as.ggplot(function(){
+par(mfrow=c(1,4))
+par(mar=c(8,4,5,1))
+for (s in c("Pvalb","L5 ET","L2/3 IT","Oligo")){
+  kpGn <- pmax(median_expression_CT[[s]],median_expression_NS[[s]])>0
+  x    <- median_expression_CT[[s]][kpGn]
+  y    <- median_expression_NS[[s]][kpGn]
+  verboseScatterplot(x,y,pch=19,main=s,xlab="Median log2(CPM+1): PM",ylab="Median log2(CPM+1): NS",cex=0.5)
+  nm   <- names(c(head(sort(median_expression_CT[[s]]-median_expression_NS[[s]]),5),
+                  head(sort(median_expression_NS[[s]]-median_expression_CT[[s]]),5)))
+  text(x[nm],y[nm],nm,cex=0.75)
+}
+})
+plt
+ggsave("top_dex_genes_by_subclass_scatterplot_NSvsPM.pdf", plot=plt, height = 4, width = 18)
+```
+  
+Good correlation overall, but some genes off diagonal that could be followed up at some point.  
+  
+  
+## Assess cell type variability
+  
+The section focuses on quantifying cell type variation.  We want to address the following questions:  
+* Can we determine a cell type variation score by comparing intra-donor vs. inter-donor variation within each cell type?  
+* Within types: How much variation?  Which genes are most variable?  
+* Between types: Which types are most variable? Conserved vs. distinct genes?  
+* Association between variation and sex, disease, etc.  
+
+We will use two primary strategies to address this question.  
+1. Random forest prediction: For what fraction of cells can the cell type of origin be accurately predicted.  This will be calculated separately for each donor, for each cell type, and using various subsets of the overall data set to reduce biases.  
+2. Gene variance score: For each gene, how variable is expression across random cells from the same vs. distinct donors?  Which genes show the most variance after accounting for expression levels?  Is this conserved across types?  Which types have the most variance?  
+  
+Both methods will rely on log2CPM data followed by standard Seurat processing as a baseline for analysis, which we already have.  To avoid relying on too sparse data, we exclude cells from donors with fewer than 4 cells in a given type.  This allows us to perform random forest predictions with four groups per cell type.  In this first section we build vectors for cells to keep.  
+  
+```{r refactor data, warning=FALSE}
+seurat_all <- datAll
+for (s in names(datAll)){
+  kpdn <- names(table(datAll[[s]]$donor_name))[table(datAll[[s]]$donor_name)>=4]
+  kp   <- is.element(datAll[[s]]$donor_name,intersect(hvs_donors,kpdn))
+  seurat_all[[s]] <- datAll[[s]][,kp]
+  seurat_all[[s]]$donor_name <- droplevels(seurat_all[[s]]$donor_name)
+}
+```
+  
+  
+Let's run random forest prediction for all subclasses using PCs as baseline (helper functions are in the sourced function file).  Let's run the random forest calculations.  Note that this is fairly slow (~a couple of hours to run).  The specific algorithm is as follows:  
+1. For each subclass, select (up to) 24 cells per donor  
+2. Run random forest prediction using 75% training, 25% test four times to get predictions for all 24 cells  
+3. Repeat first two steps 25 times to calculate mean and standard deviation of RF prediction scores per subclass, per donor  
+4. Use these values for downstream analysis  
+  
+```{r random forest calculation}
+numberOfPermutations = 25
+cellsPerPermutation  = 24
+numberOfPCs          = 30
+predictions <- list()
+correct     <- matrix(0,nrow=length(subclasses), ncol=numberOfPermutations)
+rownames(correct) <- subclasses
+
+print(paste(date(),"- start"))
+for (i in 1:numberOfPermutations){
+  print(i)
+  predictions[[i]] <- list()
+  # Run random forest prediction
+  for (ct in subclasses){
+    tmpSamp <- subsampleCells(seurat_all[[ct]]$donor_name,cellsPerPermutation,seed=i)
+    predictions[[i]][[ct]] <- rf_prediction_from_seurat(seurat_all[[ct]][,tmpSamp], pcs=numberOfPCs, seed=1)
+    correct[ct,i] <- mean(predictions[[i]][[ct]][,2]==predictions[[i]][[ct]][,1], na.rm=TRUE)
+  }
+}
+print(paste(date(),"- end"))
+```
+  
+  
+Repeat these calculations using the most variable genes.  **THIS SECTION IS VERY SLOW!!!  It will likely take a few days to run.**
+  
+```{r random forest calculation using variable genes}
+numberOfPermutations_var = numberOfPermutations 
+predictions_var <- importance_var <- list()
+correct_var     <- matrix(0,nrow=length(subclasses), ncol=numberOfPermutations_var)
+rownames(correct_var) <- subclasses
+
+print(paste(date(),"- start"))
+for (i in 1:numberOfPermutations_var){
+  print(paste(i,"-  ",date()))
+  predictions_var[[i]] <- importance_var[[i]] <- list()
+  # Run random forest prediction
+  for (ct in subclasses){
+    print(ct)
+    tmpSamp <- subsampleCells(seurat_all[[ct]]$donor_name,cellsPerPermutation,seed=i)
+    rfOut   <- rf_prediction_from_logCPM(seurat_all[[ct]][,tmpSamp])
+    predictions_var[[i]][[ct]] <- rfOut$predictions
+    importance_var[[i]][[ct]]  <- rfOut$importance
+    correct_var[ct,i] <- mean(predictions_var[[i]][[ct]][,2]==predictions_var[[i]][[ct]][,1], na.rm=TRUE)
+  }
+  save(predictions_var,importance_var,correct_var,ct,i,file="importance_genes_and_predictions.RData") # in case it crashes
+}
+print(paste(date(),"- end"))
+```
+  
+  
+How do the values look for each subclass overall? 
+  
+```{r prediction accuracy RF PCA, fig.height=5, fig.width=12}
+numberOfCells <- rowSums(correct)*0
+for (ct in rownames(correct)) numberOfCells[ct] <- dim(seurat_all[[ct]])[2]
+
+plt <- as.ggplot(function(){
+par(mfrow=c(1,2))
+verboseScatterplot(rowMeans(correct),numberOfCells,xlab="Mean RF prediction",
+                   ylab="Number of total cells",main="",col="white",pch=19,xlim=c(0.25,0.7))
+text(rowMeans(correct),numberOfCells,rownames(correct),cex=0.65,col=subclass_colors[rownames(correct)])
+verboseScatterplot(rowMeans(correct),apply(correct,1,sd),xlab="Mean RF prediction",
+                   ylab="SD of RF prediction",main="",col=subclass_colors[rownames(correct)],
+                   pch=19,xlim=c(0.25,0.7))
+cells_per_type <- paste0(round(numberOfCells/100)/10,"K")
+text(rowMeans(correct),apply(correct,1,sd),paste0(rownames(correct)," (",cells_per_type,")"),cex=0.65)
+})
+plt
+ggsave("RF_prediction_sanityCheck_scatterplots.pdf", plot=plt, height = 6, width = 12)
+
+lev   = rownames(correct)[length(rownames(correct)):1] #[order(rowMeans(correct))] # Same order as tree, but needs to be backwards to work with code.
+classes  = rep("Non-neuronal",length(lev))
+classes[is.element(lev,subclasses[1:9])] = "GABAergic"
+classes[is.element(lev,subclasses[10:18])] = "Glutamatergic"
+#cols <- labels2colors(classes)
+cols <- c("#FF9289","#CDA1FF","#CABD00")[c(1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3)][24:1]  # Match colors below
+names(classes) <- names(cols) <- lev
+xname = factor(rep(rownames(correct), ncol(correct)),levels=lev)
+
+plt <- as.ggplot(function(){
+## Let's also make a barplot
+par(mfrow=c(1,1))
+par(mar=c(10,8,5,3))
+verboseBarplot(unlist(data.frame(correct)),xname,las=2,xlab="",ylab="",main="Fraction correctly predicted",col=cols,ylim=c(0,1))
+abline(h=(0:5)/5,col="grey",lty="dotted")
+})
+plt
+ggsave("RF_prediction_barplot_large.pdf", plot=plt, height = 6, width = 12)
+```
+  
+Based on this metric, all of the glutamatergic types and non-neuronal cells have a higher predictive power (and therefore more donor variability) than GABAergic types and non-neural types (minus microglia).  This appears relatively independent of number of total cells per group and matches expectations (although interestingly L2/3 is lower than some of the other types).  In addition the standard deviation of the RF prediction is quite low.  Finally, all cell types have some donor signatures.  It may be worth testing this after accounting for supertypes, but overall I'm happy with this result.   
+  
+Repeat for the variable genes (which is what was used for the main figure).  
+  
+How do the values look for each subclass overall? 
+  
+```{r prediction accuracy RF variable genes, fig.height=5, fig.width=12}
+numberOfCells <- rowSums(correct_var)*0
+for (ct in rownames(correct_var)) numberOfCells[ct] <- dim(seurat_all[[ct]])[2]
+
+plt <- as.ggplot(function(){
+par(mfrow=c(1,2))
+verboseScatterplot(rowMeans(correct_var),numberOfCells,xlab="Mean RF prediction",
+                   ylab="Number of total cells",main="",col="white",pch=19,xlim=c(0.3,0.8))
+text(rowMeans(correct_var),numberOfCells,rownames(correct_var),cex=0.65,col=subclass_colors[rownames(correct)])
+verboseScatterplot(rowMeans(correct_var),apply(correct_var,1,sd),xlab="Mean RF prediction",
+                   ylab="SD of RF prediction",main="",col=subclass_colors[rownames(correct_var)],
+                   pch=19,xlim=c(0.3,0.8))
+cells_per_type <- paste0(round(numberOfCells/100)/10,"K")
+text(rowMeans(correct_var),apply(correct_var,1,sd),paste0(rownames(correct_var)," (",cells_per_type,")"),cex=0.65)
+})
+plt
+ggsave("RF_prediction_VARGENES_sanityCheck_scatterplots.pdf", plot=plt, height = 6, width = 12)
+
+
+plt <- as.ggplot(function(){
+par(mfrow=c(1,2))
+verboseScatterplot(rowMeans(correct),rowMeans(correct_var),xlab="Mean RF prediction (PCs)",
+                   ylab="Mean RF prediction (Var. Genes)",main="",col="black",cex=0.3,
+                   pch=19,xlim=c(0.2,0.8),ylim=c(0.2,0.8))
+abline(0,1,col="grey",lty="dashed")
+text(rowMeans(correct),rowMeans(correct_var),rownames(correct),cex=0.65,col=subclass_colors[rownames(correct_var)])
+})
+plt
+ggsave("RF_prediction_PCs_vs_VARGENES.pdf", plot=plt, height = 6, width = 12)
+
+
+lev   = rownames(correct_var)[length(rownames(correct_var)):1] #[order(rowMeans(correct_var))] # Same order as tree, but needs to be backwards to work with code.
+classes  = rep("Non-neuronal",length(lev))
+classes[is.element(lev,subclasses[1:9])] = "GABAergic"
+classes[is.element(lev,subclasses[10:18])] = "Glutamatergic"
+#cols <- labels2colors(classes)
+cols <- c("#FF9289","#CDA1FF","#CABD00")[c(1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3)][24:1]  # Match colors below
+names(classes) <- names(cols) <- lev
+xname = factor(rep(rownames(correct_var), ncol(correct_var)),levels=lev)
+
+plt <- as.ggplot(function(){
+## Let's also make a barplot
+par(mfrow=c(1,1))
+par(mar=c(10,8,5,3))
+verboseBarplot(unlist(data.frame(correct_var)),xname,las=2,xlab="",ylab="",main="Fraction correctly predicted",col=cols,ylim=c(0,1))
+abline(h=(0:5)/5,col="grey",lty="dotted")
+})
+plt
+ggsave("RF_prediction_VARGENES_barplot_large.pdf", plot=plt, height = 6, width = 12)
+```
+  
+  
+Let's retry on a per-donor level to see if the same donors are outliers for each cell type.  
+  
+```{r donor-level results, fig.height=5.5, fig.width=8.5}
+donors <- unique(predictions[[1]][["L2/3 IT"]][,"donor"])
+dons   <- sort(unique(donors))
+agreements <- matrix(0,nrow = length(subclasses),ncol=length(dons))
+rownames(agreements) <- subclasses
+colnames(agreements) <- dons
+for (ct in subclasses) for (dn in dons){
+  tmp <- NULL
+  for (num in 1:numberOfPermutations)
+    tmp <- c(tmp, sum((predictions_var[[num]][[ct]][,1]==dn)&(predictions_var[[num]][[ct]][,2]==dn),
+                           na.rm=TRUE) / sum(predictions_var[[num]][[ct]][,1]==dn,na.rm=TRUE))
+  agreements[ct,dn] = mean(tmp,rm.na=TRUE)
+}
+agreements[is.nan(agreements)] = NA
+
+#Create heatmap using pheatmap 
+agreements <- agreements[lev[length(lev):1],]  # Reorder to match above
+col_meta = data.frame(donor_metadata[dons,c("Sex","Disease","ROI")])
+pheat <- pheatmap(agreements, show_rownames=TRUE, cluster_cols=TRUE, cluster_rows=FALSE,  # Rows should match above 
+                scale="none", annotation_col = col_meta, annotation_row = data.frame(celltype=classes[rownames(agreements)]),
+                clustering_distance_rows="euclidean", cex=1, clustering_distance_cols="euclidean", 
+                clustering_method="complete", border_color=FALSE, main="Fraction of cells correctly mapped to donor")
+pheat
+ggsave("RF_prediction_main_pheatmap_plot.pdf", plot=pheat, height = 6, width = 9)
+outlierFactor <- colMeans(agreements,na.rm=TRUE)
+write.csv(agreements,"correct_RF_mapping_fraction.csv")
+```
+  
+  
+Plot the median value again a bit smaller for plotting purposes.  
+  
+```{r plot tree order, fig.height=4.5, fig.width=6}
+subclass_order <- lev[length(lev):1]
+plt <- as.ggplot(function(){
+par(mfrow=c(1,1))
+par(mar=c(10,8,3,3))
+ord   <- subclass_order[length(subclass_order):1]
+xname <- factor(as.character(xname),levels=ord)
+verboseBarplot(unlist(data.frame(correct_var)),xname,las=2,xlab="",ylab="Fraction correctly predicted",
+               col=cols[ord],ylim=c(0,1), cex=0.5, cex.axis = 1, cex.lab = 1)
+abline(h=(0:5)/5,col="grey",lty="dotted")
+abline(h=median(unlist(data.frame(correct_var))),col="black",lwd=2)
+})
+plt
+ggsave("RF_prediction_barplot_large.pdf", plot=plt, height = 4.5, width = 6)
+```
+  
+  
+There is a clear cell type separation by class, as discussed above (row colors), but the donor separation between donor demographics is less obvious.  Let's quantify this significance of this using a linear model.  
+
+```{r linear model RF predictions}
+lm_pval_apply(colMeans(agreements,na.rm=TRUE)[kp_donors3])  # Function is in the extra_functions.r script
+```
+  
+  
+Plot a donor bar plot as well.  
+  
+```{r plot tree order per donor, fig.height=1.5, fig.width=8}
+subclass_order <- lev[length(lev):1]
+plt <- as.ggplot(function(){
+par(mfrow=c(1,1))
+par(mar=c(10,8,3,3))
+val   <- -apply(agreements,2,median,na.rm=TRUE)[pheat$tree_col$order]
+names(val) <- NULL
+barplot(val,ylim=c(-1,0),border = FALSE, cex.axis = 0.5, cex.lab = 0.5, las=2,
+        ylab="RF accuracy (median)", xlab="",main="")
+abline(h=-(0:5)/5,col="grey",lty="dotted")
+abline(h=-median(unlist(data.frame(correct_var))),col="black",lwd=2)
+})
+plt
+ggsave("RF_prediction_per_donor_barplot.pdf", plot=plt, height = 1.5, width = 8)
+```
+  
+  
+Significant separation by sex based on linear model.  Let's plot these values and calculate Kruskal-Wallace test p-values as well.    
+  
+```{r RF plots by class region and sex, fig.height=5,fig.width=14}
+allGroupsD <- donor_metadata[kp_donors3,"Disease"]
+allGroupsR <- donor_metadata[hvs_donors,"ROI"]
+allGroupsS <- donor_metadata[hvs_donors,"Sex"]
+
+color_palatte <- setNames(c("#FF86FF","#3DC1FF","#FF86FF","#00D5FA","#7FCD00","#F9A80F","#00D979","#FF9289","#CDA1FF","#CABD00"),
+                          c("Epilepsy","Tumor","FRO","MTG","PCx","F","M","GABAergic","Glutamatergic","Non-neuronal"))
+
+plt <- as.ggplot(function(){
+par(mfrow=c(1,4))
+par(mar=c(12,9,4,1))
+verboseBarplot(colMeans(agreements[,kp_donors3],na.rm=TRUE),allGroupsD,ylab="RF prediction",main="", 
+               xlab="",ylim=c(0,1), las=2, col=color_palatte[c("Epilepsy","Tumor")],pt.col="black",KruskalTest = TRUE,
+               addScatterplot = TRUE, pch=19, pt.cex=1.5, cex.lab=1.5, cex.axis = 1, cex.main = 1.5)
+par(mar=c(12,7,4,1))
+verboseBarplot(colMeans(agreements[,hvs_donors],na.rm=TRUE),allGroupsR,ylab="RF prediction",main="", 
+               xlab="",ylim=c(0,1), las=2, col=color_palatte[c("FRO","MTG","PCx")],pt.col="black",KruskalTest = TRUE,
+               addScatterplot = TRUE, pch=19, pt.cex=1.5, cex.lab=1.5, cex.axis = 1, cex.main = 1.5)
+par(mar=c(12,9,4,1))
+verboseBarplot(colMeans(agreements[,hvs_donors],na.rm=TRUE),allGroupsS,ylab="RF prediction",main="", 
+               xlab="",ylim=c(0,1), las=2, col=color_palatte[c("F","M")],pt.col="black",KruskalTest = TRUE,
+               addScatterplot = TRUE, pch=19, pt.cex=1.5, cex.lab=1.5, cex.axis = 1, cex.main = 1.5)
+par(mar=c(12,7,4,1))
+verboseBarplot(rowMeans(correct[subclasses,],na.rm=TRUE),classes[subclasses],ylab="RF prediction",
+               xlab="",ylim=c(0,1), las=2, col=color_palatte[unique(classes[subclasses])],pt.col="black",KruskalTest = TRUE,
+               main="",addScatterplot = TRUE, pch=19, pt.cex=1.5, cex.lab=1.5, cex.axis = 1, cex.main = 1.5)
+})
+plt
+ggsave("RFprediction_barplots_averaged.pdf", plot=plt, height = 5, width = 14)
+```
+  
+  
+Now let's see how these RF predictions differ across donor metadata by subclass as we did with abundances above.  
+  
+```{r linear model RF predictions by subclass}
+#cn <- c("Disease","ROI","Sex")
+cn <- c("Disease","ROI","Sex","Tissue.Source","Age")
+RFagreement <- t(agreements[subclasses,kp_donors3])
+lm_pvalRF <- apply(RFagreement,2,lm_pval_apply) # This function is in the extra_functions.r file
+rownames(lm_pvalRF) <- cn
+data.frame(t(lm_pvalRF))
+lm_pval_adjustRF <- apply(lm_pvalRF,2,p.adjust)  # FDR corrected
+data.frame(t(lm_pval_adjustRF))
+```
+  
+  
+```{r per subclass RF plots by region and sex, fig.height=10,fig.width=14}
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,5.5,2,1))
+for (s in subclasses)
+  verboseBarplot(agreements[s,kp_donors3],allGroupsD,ylab=s,main="",KruskalTest = TRUE, xlab="",
+                 ylim=c(0,1), las=2, pt.col=subclass_colors[s],col=color_palatte[c("Epilepsy","Tumor")],
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1.5, cex.axis = 0.7, cex.main = 1.5)
+})
+plt
+ggsave("RFprediction_barplots_by_subclass_disease.pdf", plot=plt, height = 10, width = 14)
+
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,4.7,2,1))
+for (s in subclasses)
+  verboseBarplot(agreements[s,hvs_donors],allGroupsR,ylab=s,main="",KruskalTest = TRUE, xlab="",
+                 ylim=c(0,1), las=2, pt.col=subclass_colors[s],col=color_palatte[c("FRO","MTG","PCx")],
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1.5, cex.axis = 0.7, cex.main = 1.5)
+})
+plt
+ggsave("RFprediction_barplots_by_subclass_region.pdf", plot=plt, height = 10, width = 14)
+
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,5.5,2,1))
+for (s in subclasses)
+  verboseBarplot(agreements[s,hvs_donors],allGroupsS,ylab=s,main="",KruskalTest = TRUE, xlab="",
+                 ylim=c(0,1), las=2, pt.col=subclass_colors[s],col=color_palatte[c("F","M")],
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1.5, cex.axis = 0.7, cex.main = 1.5)
+})
+plt
+ggsave("RFprediction_barplots_by_subclass_sex.pdf", plot=plt, height = 10, width = 14)
+```
+  
+  
+See which genes are most informative in the various RF models.
+  
+```{r RF gene importance}
+gene_importances <- NULL
+for (ct in subclasses){
+  print(ct)
+  iv <- NULL
+  for (i in 1:numberOfPermutations) for (j in 1:4){
+    l   <- dim(importance_var[[i]][[ct]][[j]])[2]
+    tmp <- data.frame(gene=row.names(importance_var[[i]][[ct]][[j]]),importance_var[[i]][[ct]][[j]][,(l-1):l])
+    iv  <- rbind(iv,tmp)
+  }
+  iv_mean <- iv %>% group_by(gene) %>% summarise(mean=mean(MeanDecreaseAccuracy))
+  iv_mean <- as.data.frame(iv_mean[order(-iv_mean$mean),])
+  gene_importances <- rbind(gene_importances,data.frame(subclass=ct,iv_mean))
+}
+
+# Summarize by subclass
+gene_importances_mean <- spread(gene_importances, subclass, mean) 
+rownames(gene_importances_mean) <- gene_importances_mean$gene
+gene_importances_mean <- as.matrix(gene_importances_mean[,2:dim(gene_importances_mean)[2]])
+
+head(sort(-rowMeans(gene_importances_mean,na.rm=TRUE)),50)
+```
+  
+Split by sex.  
+  
+```{r RF gene male female}
+male   <- hvs_donors[donor_metadata[hvs_donors,"Sex"]=="M"]
+female <- hvs_donors[donor_metadata[hvs_donors,"Sex"]=="F"]
+male_importances <- female_importances <- NULL
+for (ct in subclasses){
+  print(ct)
+  iv <- NULL
+  for (i in 1:numberOfPermutations) for (j in 1:4){
+    x   <- importance_var[[i]][[ct]][[j]]
+    m   <- intersect(male,colnames(x))
+    f   <- intersect(female,colnames(x))
+    tmp <- data.frame(gene=row.names(x), mval = rowMeans(x[,m]), fval = rowMeans(x[,f]))
+    iv  <- rbind(iv,tmp)
+  }
+  iv_m <- iv %>% group_by(gene) %>% summarise(mean=mean(mval))
+  iv_m <- as.data.frame(iv_m[order(-iv_m$mean),])
+  iv_f <- iv %>% group_by(gene) %>% summarise(mean=mean(fval))
+  iv_f <- as.data.frame(iv_f[order(-iv_f$mean),])
+  male_importances   <- rbind(male_importances,data.frame(subclass=ct,iv_m))
+  female_importances <- rbind(female_importances,data.frame(subclass=ct,iv_f))
+}
+
+# Summarize by subclass
+male_importances_mean <- spread(male_importances, subclass, mean) 
+rownames(male_importances_mean) <- male_importances_mean$gene
+male_importances_mean <- as.matrix(male_importances_mean[,2:dim(male_importances_mean)[2]])
+female_importances_mean <- spread(female_importances, subclass, mean) 
+rownames(female_importances_mean) <- female_importances_mean$gene
+female_importances_mean <- as.matrix(female_importances_mean[,2:dim(female_importances_mean)[2]])
+```
+  
+Some plots using this information will show up later in the script.  
+  
+  
+## High variance genes (Fig 1)
+  
+This section is aimed at identifying the genes with strong donor signatures.  More specifically, we seek to ask which genes have variance that is highly donor-dependent (e.g., random cell pairs from different donors are more variable than pairs of cells from the same donor), rather than strictly defining variance of a given gene. This analysis is intended mostly as a lead-in to running variance partitioning analysis (see other scripts): here we find genes that are variable for any reason and there we see what fraction of a gene's variance relates to different metadata variables.  
+  
+Start by calculating expressed genes.  
+  
+```{r cell type genes}
+# Find cell type genes
+kpGn <- list()
+for (ct in subclasses){
+  tmpSamp    <- subsampleCells(seurat_all[[ct]]$donor_name,cellsPerPermutation)  # Speed up quantile calculation and make it fairer by subsampling by donor
+  kpGn[[ct]] <- apply(seurat_all[[ct]]@assays$RNA@data[,tmpSamp],1,quantile,probs=0.75)>0  # Include genes expressed in >25% of cells
+}
+```
+  
+  
+Now calculate the gene diffs and variances.  
+  
+```{r distances between cell pairs}
+# Variable set up
+cellsPerSubclass <- 7500 #2500 # Average of 100 cell pairs per donor
+gene_variances   <- gene_variances_permuted <- gene_diffs <- gene_diffs_permuted <- list()
+
+# Calculate differences between pairs of cells and associate variation of these differences
+print(paste(date(),"- start"))
+for (ct in subclasses){
+  tb        <- table(seurat_all[[ct]]$donor_name)
+  tmpDonors <- names(tb)[tb>=4]
+  tmpSamp   <- is.element(seurat_all[[ct]]$donor_name,tmpDonors)
+  set.seed(which(subclasses==ct))
+  donor1    <- sample(tmpDonors,cellsPerSubclass*3,replace=TRUE)
+  set.seed(which(subclasses==ct)+1)
+  donor2    <- sample(tmpDonors,cellsPerSubclass*3,replace=TRUE)
+  kpTmp     <- donor1!=donor2
+  donor1    <- donor1[kpTmp][1:cellsPerSubclass]
+  donor2    <- donor2[kpTmp][1:cellsPerSubclass]
+  cell1a <- cell1b <- cell2a <- NULL
+  for (z in 1:cellsPerSubclass){
+    c1a    <- sample(which(seurat_all[[ct]]$donor_name==donor1[z]),1)
+    cell1a <- c(cell1a,c1a)
+    cell1b <- c(cell1b,sample(which((seurat_all[[ct]]$donor_name==donor1[z])&((1:length(seurat_all[[ct]]$donor_name))!=c1a)),1))
+    cell2a <- c(cell2a,sample(which(seurat_all[[ct]]$donor_name==donor2[z]),1))
+  }
+  
+  # Remove duplicates
+  firstOne   <- match(unique(cell1a*(cell1b/7)^2),cell1a*(cell1b/7)^2)
+  countFirst <- length(firstOne)
+  
+  datTmp     <- seurat_all[[ct]]@assays$RNA@data[kpGn[[ct]],c(cell1a[firstOne],cell1b[firstOne],cell2a[firstOne])]
+  gene_diffs[[ct]]          <- abs(datTmp[,(1:countFirst)]-datTmp[,(countFirst+1):(2*countFirst)])
+  gene_diffs_permuted[[ct]] <- abs(datTmp[,(1:countFirst)]-datTmp[,(2*countFirst+1):(3*countFirst)])
+  gene_variances[[ct]]          <- t(fvar(t(as.matrix(gene_diffs[[ct]])),rep("All",countFirst)))
+  gene_variances_permuted[[ct]] <- t(fvar(t(as.matrix(gene_diffs_permuted[[ct]])),rep("All",countFirst)))
+  print(paste("Cell count:",ct,"=",dim(gene_diffs[[ct]])[2]))
+}
+print(paste(date(),"- end"))
+```
+  
+  
+Summarize these values between matched and distinct donors.  
+  
+```{r summarize stats, eval=FALSE}
+# Function for doing this is in the extra function file
+variance_stats <- list()
+for (ct in subclasses){
+  out  <- t(apply(cbind(gene_diffs_permuted[[ct]],gene_diffs[[ct]]),1,getStats))
+  out  <- cbind(out,p.adjust(out[,6],"BH")) # Define FDR corrected p-values  # qvalue(out[,6])$qvalue)#
+  colnames(out) <- c("permuted_var","actual_var","permuted_var_sd",
+	                   "actual_var_sd","Tstat","Pvalue","FDR_Pvalue")
+  variance_stats[[ct]] <- as.data.frame(out)
+}
+print("Summarization complete.")
+```
+
+  
+Now let's calculate and output the median variation scores for each gene.  Which ones have the lowest ratio (e.g., ratio within donor tends to be dramatically lower than when random cells are takes between donors).  This output will be used for   
+  
+```{r calculate the median variation scores}
+ap_summaries <- matrix(NA,nrow=dim(datAll[[1]])[1],ncol=length(subclasses))
+rownames(ap_summaries) <- rownames(datAll[[1]])
+colnames(ap_summaries) <- subclasses
+var_real <- var_perm <- ap_summaries
+for (ct in subclasses){
+  ap_var <- variance_stats[[ct]]$actual_var/variance_stats[[ct]]$permuted_var
+  ap_summaries[rownames(variance_stats[[ct]]),ct] <- ap_var
+  var_real[rownames(variance_stats[[ct]]),ct]     <- variance_stats[[ct]]$actual_var
+  var_perm[rownames(variance_stats[[ct]]),ct]     <- variance_stats[[ct]]$permuted_var
+}
+median_ap   <- apply(ap_summaries,1,function(x) median(x,na.rm=TRUE))
+median_real <- apply(var_real,1,median,na.rm=TRUE)
+median_perm <- apply(var_perm,1,median,na.rm=TRUE)
+
+# Write to a file
+out <- data.frame(gene=names(median_ap), variation_score=median_ap, 
+                  actual_variation=median_real, permuted_variation=median_perm)
+out <- out[!is.na(out$variation_score),]
+write.csv(out, "variation_score.csv", row.names=FALSE)
+```
+  
+  
+Now directly compare distances between cells from different vs. the same donors.  
+  
+```{r permuted vs actual variation, fig.height=6, fig.width=6}
+plt <- as.ggplot(function(){
+verboseScatterplot(median_perm,median_real,xlab="Gene distance in cells from different donor",
+                   ylab="Gene distance in cells from same donor",pch=19,cex=0.5)
+segments(0.5,0.5,5,5,lwd=2,col="grey")
+text(2,4,paste0(signif(100*mean(median_perm<median_real,na.rm=TRUE),2),"% S>D"),cex=1.5)
+gn <- names(head(sort(median_ap),15))
+text(median_perm[gn],median_real[gn],gn,cex=0.7)
+})
+plt
+ggsave("geneVariance_realVsPermuted_scatterplot.pdf", plot=plt, height = 6, width = 6)
+```
+
+  
+Which genes per subclass are significant in each direction after FDR correction?  We also get the count.
+  
+```{r which are significant genes}
+## Dynamic selection of threshold to ensure no random genes
+thresh = 1
+for (ct in subclasses) 
+  thresh=min(c(thresh,variance_stats[[ct]]$FDR_Pvalue[variance_stats[[ct]]$Tstat<0]))
+print(paste("Dynamic threshold:",signif(thresh,3)))
+varGenes <- NULL
+
+#thresh=0.001
+
+for (ct in subclasses){
+  tmp  <- abs(10*(variance_stats[[ct]]$Tstat<0)+(variance_stats[[ct]]$FDR_Pvalue<thresh)-5)-3
+  out  <- data.frame(gene=rownames(variance_stats[[ct]]),direction=c("high","NS","low")[tmp],subclass=ct)
+  varGenes <- rbind(varGenes,out)
+}
+
+## Output the genes to a table
+write.csv(varGenes,"variable_genes.csv",row.names = FALSE)
+```
+  
+  
+Plot the number.  
+  
+```{r significant gene count, fig.height=8, fig.width=9}
+highVar <- table(factor(varGenes$subclass[varGenes$direction=="high"],levels=subclasses))
+lowVar  <- table(factor(varGenes$subclass[varGenes$direction=="low"],levels=subclasses))
+
+plt <- as.ggplot(function(){
+par(mfrow=c(2,1))
+par(mar=c(5,5,3,3))
+barplot(highVar,las=2,xlab="",main=paste("High variance genes - P(BH.adj) <",signif(thresh,2)),col=cols[names(highVar)],ylab="Count")
+barplot(lowVar,las=2,xlab="",main=paste("Low variance genes - P(BH.adj) <",signif(thresh,2)),col=cols[names(highVar)],ylab="Count")
+})
+plt
+ggsave("variance_gene_counts_barplot.pdf", plot=plt, height = 8, width = 9)
+```
+  
+  
+There are a lot of genes with significantly higher than chance variation in many cell types, with essentially no genes in any cell type showing less variation than expected by chance, as expected.  Many more high variance genes in glutamatergic than GABAergic types, consistent with other metrics.  
+  
+What if we scale by the number of expressed genes, since non-neuronal types generally have fewer genes expressed?
+  
+```{r scaled gene count, fig.height=8, fig.width=9}
+geneCountPerSubclass <- table(varGenes$subclass)[names(highVar)]
+
+plt <- as.ggplot(function(){
+par(mfrow=c(2,1))
+par(mar=c(5,5,3,3))
+barplot(highVar/geneCountPerSubclass,las=2,xlab="", col=cols[names(highVar)],main="Fraction of expressed genes that have high variance")
+abline(h=c(.1,.2,.3),lty="dashed",col="grey")
+})
+plt
+ggsave("variance_gene_fraction_barplot.pdf", plot=plt, height = 8, width = 9)
+```
+
+  
+Let's see whether these gene counts are dependent on the number of cells per subclass per donor.  
+  
+```{r compare to cell rarity, fig.height=6, fig.width=12}
+plt <- as.ggplot(function(){
+par(mfrow=c(1,2))
+verboseScatterplot(numberOfCells,highVar[subclasses],ylab="Number of high variance genes",
+                   xlab="Number of total cells",main="",col=subclass_colors[names(numberOfCells)],pch=19,xlim=c(-10000,100000))
+text(numberOfCells,highVar[subclasses],subclasses,cex=0.65)
+verboseScatterplot(rowMeans(correct_var),highVar[subclasses],ylab="Number of high variance genes",
+                   xlab="Mean RF prediction",main="",col=subclass_colors[names(numberOfCells)],pch=19,xlim=c(0.3,0.8))
+text(rowMeans(correct_var),highVar[subclasses],subclasses,cex=0.65)
+})
+plt
+ggsave("RF_prediction_sanityCheck_scatterplots_revisit.pdf", plot=plt, height = 6, width = 12)
+
+# Repeat, excluding cell types with <1000 cells (we may want to do this anyway)
+plt <- as.ggplot(function(){
+par(mfrow=c(1,2))
+kp=numberOfCells>1000
+verboseScatterplot(numberOfCells[kp],highVar[subclasses][kp],ylab="Number of high variance genes",
+                   xlab="Number of total cells",main="<1000cells",col=subclass_colors[names(numberOfCells[kp])],pch=19,xlim=c(-10000,100000))
+text(numberOfCells[kp],highVar[subclasses][kp],subclasses[kp],cex=0.65)
+verboseScatterplot(rowMeans(correct_var)[kp],highVar[subclasses][kp],ylab="Number of high variance genes",
+                   xlab="Mean RF prediction",main="<1000cells",col=subclass_colors[names(numberOfCells[kp])],pch=19,xlim=c(0.3,0.8))
+text(rowMeans(correct_var)[kp],highVar[subclasses][kp],subclasses[kp],cex=0.65)
+})
+plt
+ggsave("RF_prediction_sanityCheck_scatterplots_revisitAndSubset.pdf", plot=plt, height = 6, width = 12)
+```
+  
+Except for really rare cell types, there number of high variance genes (1) isn't related to total number of cells but (2) is related to the mean RF prediction.  We may want to consider removing these four types for the entire analysis.  
+  
+Run gene ontology enrichment analysis (using fgsea) for each subclass, and then look at the results.  
+  
+```{r fgsea 3, warning=FALSE}
+load(paste0(inputFolder,"GOterms.RData"))  # Should have been generated previously
+GOterms_all <- c(GOterms[[1]],GOterms[[2]],GOterms[[3]])
+all         <- unique(varGenes$gene)
+goHigh      <- list()
+topHitsH    <- NULL
+for (ct in subclasses){
+  gnH <- varGenes$gene[(varGenes$subclass==ct)&(varGenes$direction=="high")]
+  goHigh[[ct]] <- fora(GOterms_all, genes=gnH, universe=all, minSize = 10, maxSize = 500)
+  topHitsH <- rbind(topHitsH,data.frame(goHigh[[ct]][,c(1,3)],type=ct,direction="High variance")[1:10,])
+}
+topHitsH[,1] <- substr(topHitsH[,1],1,40) # For legibility
+topHitsH
+```
+  
+For non-neuronal cells, the most variable genes are interestingly synaptic genes, for microglia, they are inflammatory response genes (likely reflecting microglial states), but for neuronal types there are no significant categories for nearly any subclass.  
+  
+Plot some example genes as a sanity check, with each point corresponding to the average value per cell type.  
+  
+```{r example gene plots, fig.height=4.5, fig.width=15, warning=FALSE}
+ct <- "L6 CT"
+plt <- as.ggplot(function(){
+par(mfrow=c(1,4))
+for (gn in c("XIST","LRRC37A","JUND","MALAT1")){
+  varx <- c(gene_diffs_permuted[[ct]][gn,],gene_diffs[[ct]][gn,])
+  gp   <- c(rep("Different",length(gene_diffs_permuted[[ct]][gn,])),rep("Same donors",length(gene_diffs[[ct]][gn,])))
+  gp   <- gp[!is.na(varx)]
+  varx   <- varx[!is.na(varx)]
+  verboseBoxplot(varx,gp,main=gn,pt.cex=1.2, addScatterplot = TRUE, cex.lab=1.5, pch=19,
+                 xlab="",ylab="abs(log2CPM(N1)-log2CPM(N2))",col="white",pt.col = "black")
+}
+})
+plt
+ggsave("exampleHighVarianceGenes_scatterplots.pdf", plot=plt, height = 4.5, width = 15)
+```
+  
+Next, let's see how frequently unique genes appear in multiple cell types as highly variable.  
+  
+```{r high variable gene count, fig.height=4,fig.width=7}
+varCount <- table(varGenes$gene[varGenes$direction=="high"])
+plt <- as.ggplot(function(){
+barplot(table(varCount),log="y",las=2,ylab="# genes",col="black",
+        xlab="# of of subclasses for which gene is highly variable")
+})
+plt
+ggsave("number_of_subclasses_per_high_variance_gene.pdf", plot=plt, height = 4, width = 7)
+data.frame(-sort(-varCount[varCount>=15]))
+data.frame(varCount[sort(names(head(sort(median_ap),15)))])
+```
+  
+  
+Finally, plot some comparisons between median_ap and various random forest metrics.  
+  
+```{r RF gene male female plots, fig.height=5,fig.width=11}
+# Plot some gene comparisons
+plt <- as.ggplot(function(){
+par(mfrow=c(1,2))
+gg <- intersect(rownames(gene_importances_mean),names(median_ap)[!is.na(median_ap)])
+a= median_ap[gg]
+b= rowMeans(gene_importances_mean,na.rm=TRUE)
+names(b) <- rownames(gene_importances_mean)
+b = b[gg]
+verboseScatterplot(a,b,pch=19,cex=0.5,xlab="Mean gene variance ratio", ylab="Median decrease RF accuracy")
+abline(0,1)
+kp <- b>=0.001
+text(a[kp],b[kp],names(a)[kp],cex=0.5)
+
+a = rowMeans(male_importances_mean,na.rm=TRUE)
+b = rowMeans(female_importances_mean,na.rm=TRUE)
+names(a) <- names(b) <- rownames(male_importances_mean)
+verboseScatterplot(a,b,pch=19,cex=0.5,xlab="Mean RF score in Male",ylab="Mean RF score in Female")
+abline(0,1)
+kp <- a>=0.001
+text(a[kp],b[kp],names(a)[kp],cex=0.5)
+})
+plt
+ggsave("RF_gene_importance_vs_variable_genes.pdf", plot=plt, height = 5, width = 11)
+```
+  
+Sex chromosome genes (even y-chromosome genes!) have higher imporantance for female than male donors.  I wonder if this is because there are fewer females overall in the study?  
+  
+Output session information.  
+  
+```{r sessionInfo}
+sessionInfo()
+```
+  
+  
+
+ 
+  

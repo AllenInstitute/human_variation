@@ -1,0 +1,140 @@
+"cluster_label","cluster_color","cluster_order","subclass_label","subclass_color","subclass_order","class_label","class_color","class_order"
+"Lamp5_Lhx6_1","#B49186",1,"Lamp5 Lhx6","#935F50",1,"Neuronal: GABAergic","#F05A28",1
+"Lamp5_1","#F9B7C3",2,"Lamp5","#DA808C",2,"Neuronal: GABAergic","#F05A28",1
+"Lamp5_2","#DA9EA8",3,"Lamp5","#DA808C",2,"Neuronal: GABAergic","#F05A28",1
+"Lamp5_3","#BB848E",4,"Lamp5","#DA808C",2,"Neuronal: GABAergic","#F05A28",1
+"Lamp5_4","#9D6B74",5,"Lamp5","#DA808C",2,"Neuronal: GABAergic","#F05A28",1
+"Lamp5_5","#7E525A",6,"Lamp5","#DA808C",2,"Neuronal: GABAergic","#F05A28",1
+"Lamp5_6","#603A40",7,"Lamp5","#DA808C",2,"Neuronal: GABAergic","#F05A28",1
+"Pax6_1","#D38FEF",8,"Pax6","#71238C",3,"Neuronal: GABAergic","#F05A28",1
+"Pax6_2","#9E65B5",9,"Pax6","#71238C",3,"Neuronal: GABAergic","#F05A28",1
+"Pax6_3","#693B7B",10,"Pax6","#71238C",3,"Neuronal: GABAergic","#F05A28",1
+"Pax6_4","#341142",11,"Pax6","#71238C",3,"Neuronal: GABAergic","#F05A28",1
+"Sncg_3","#C17ED6",12,"Sncg","#DF70FF",4,"Neuronal: GABAergic","#F05A28",1
+"Sncg_6","#86539A",13,"Sncg","#DF70FF",4,"Neuronal: GABAergic","#F05A28",1
+"Sncg_2","#D58DEA",14,"Sncg","#DF70FF",4,"Neuronal: GABAergic","#F05A28",1
+"Sncg_1","#E99CFF",15,"Sncg","#DF70FF",4,"Neuronal: GABAergic","#F05A28",1
+"Sncg_8","#5F3672",16,"Sncg","#DF70FF",4,"Neuronal: GABAergic","#F05A28",1
+"Sncg_4","#AD70C2",17,"Sncg","#DF70FF",4,"Neuronal: GABAergic","#F05A28",1
+"Sncg_5","#9A61AE",18,"Sncg","#DF70FF",4,"Neuronal: GABAergic","#F05A28",1
+"Vip_14","#876297",19,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_15","#805C90",20,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_16","#795689",21,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_4","#CC9EE1",22,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_5","#C598D9",23,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_6","#BE92D2",24,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_9","#A980BC",25,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_2","#DAAAEF",26,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_11","#9B74AD",27,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_13","#8E689F",28,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_1","#E1B0F7",29,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_12","#946EA6",30,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_18","#6B4A7A",31,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_19","#644473",32,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_21","#563864",33,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Vip_23","#492C56",34,"Vip","#A45FBF",5,"Neuronal: GABAergic","#F05A28",1
+"Sst Chodl_1","#C9C958",35,"Sst Chodl","#B1B10C",6,"Neuronal: GABAergic","#F05A28",1
+"Sst_1","#FFB84F",36,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_4","#ECA846",37,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_5","#E6A343",38,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_7","#D9993D",39,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_3","#F2AD49",40,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_19","#8E5B19",41,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_9","#CD8F37",42,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_10","#C68934",43,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_13","#B47A2B",44,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_12","#BA7F2E",45,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst Chodl_2","#7D7D08",46,"Sst Chodl","#B1B10C",6,"Neuronal: GABAergic","#F05A28",1
+"Sst_11","#C08430",47,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_20","#885616",48,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_22","#7B4C10",49,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_23","#75470C",50,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_25","#693D07",51,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Sst_2","#F8B24C",52,"Sst","#FF9900",7,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_6","#BE5860",53,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_5","#C96068",54,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_8","#A64A52",55,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_7","#B25159",56,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_1","#F97D86",57,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_3","#E16E77",58,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_2","#ED757E",59,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_15","#54181E",60,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_14","#5F1F25",61,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_12","#772D34",62,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_10","#8E3C43",63,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_13","#6B262C",64,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Pvalb_9","#9A434A",65,"Pvalb","#D93137",8,"Neuronal: GABAergic","#F05A28",1
+"Chandelier_1","#F87CC3",66,"Chandelier","#F641A8",9,"Neuronal: GABAergic","#F05A28",1
+"Chandelier_2","#AD2D76",67,"Chandelier","#F641A8",9,"Neuronal: GABAergic","#F05A28",1
+"L2/3 IT_1","#EEF987",68,"L2/3 IT","#B1EC30",10,"Neuronal: Glutamatergic","#00ADF8",2
+"L2/3 IT_2","#E1EC7F",69,"L2/3 IT","#B1EC30",10,"Neuronal: Glutamatergic","#00ADF8",2
+"L2/3 IT_6","#ADBC63",70,"L2/3 IT","#B1EC30",10,"Neuronal: Glutamatergic","#00ADF8",2
+"L2/3 IT_7","#A0B05C",71,"L2/3 IT","#B1EC30",10,"Neuronal: Glutamatergic","#00ADF8",2
+"L2/3 IT_5","#BAC86A",72,"L2/3 IT","#B1EC30",10,"Neuronal: Glutamatergic","#00ADF8",2
+"L2/3 IT_13","#536831",73,"L2/3 IT","#B1EC30",10,"Neuronal: Glutamatergic","#00ADF8",2
+"L2/3 IT_10","#798C46",74,"L2/3 IT","#B1EC30",10,"Neuronal: Glutamatergic","#00ADF8",2
+"L2/3 IT_8","#93A454",75,"L2/3 IT","#B1EC30",10,"Neuronal: Glutamatergic","#00ADF8",2
+"L2/3 IT_12","#5F7438",76,"L2/3 IT","#B1EC30",10,"Neuronal: Glutamatergic","#00ADF8",2
+"L6 IT_1","#BEB867",77,"L6 IT","#A19922",13,"Neuronal: Glutamatergic","#00ADF8",2
+"L6 IT_2","#716C18",78,"L6 IT","#A19922",13,"Neuronal: Glutamatergic","#00ADF8",2
+"L4 IT_2","#72C3C7",79,"L4 IT","#00E5E5",11,"Neuronal: Glutamatergic","#00ADF8",2
+"L4 IT_3","#579697",80,"L4 IT","#00E5E5",11,"Neuronal: Glutamatergic","#00ADF8",2
+"L4 IT_4","#3C6868",81,"L4 IT","#00E5E5",11,"Neuronal: Glutamatergic","#00ADF8",2
+"L5 IT_1","#B0DFE2",82,"L5 IT","#50B2AD",12,"Neuronal: Glutamatergic","#00ADF8",2
+"L5 IT_3","#82ADAD",83,"L5 IT","#50B2AD",12,"Neuronal: Glutamatergic","#00ADF8",2
+"L2/3 IT_3","#D4E078",84,"L2/3 IT","#B1EC30",10,"Neuronal: Glutamatergic","#00ADF8",2
+"L4 IT_1","#8DF2F7",85,"L4 IT","#00E5E5",11,"Neuronal: Glutamatergic","#00ADF8",2
+"L5 IT_2","#99C6C7",86,"L5 IT","#50B2AD",12,"Neuronal: Glutamatergic","#00ADF8",2
+"L5 IT_5","#547B79",87,"L5 IT","#50B2AD",12,"Neuronal: Glutamatergic","#00ADF8",2
+"L5 IT_6","#3D625F",88,"L5 IT","#50B2AD",12,"Neuronal: Glutamatergic","#00ADF8",2
+"L5 IT_7","#264945",89,"L5 IT","#50B2AD",12,"Neuronal: Glutamatergic","#00ADF8",2
+"L5 ET_1","#67A8B2",90,"L5 ET","#0D5B78",15,"Neuronal: Glutamatergic","#00ADF8",2
+"L5 ET_2","#0D5B78",91,"L5 ET","#0D5B78",15,"Neuronal: Glutamatergic","#00ADF8",2
+"L6 CT_1","#81CDE7",92,"L6 CT","#2D8CB8",16,"Neuronal: Glutamatergic","#00ADF8",2
+"L6 CT_2","#5FA3BC",93,"L6 CT","#2D8CB8",16,"Neuronal: Glutamatergic","#00ADF8",2
+"L6 CT_3","#3D7A91",94,"L6 CT","#2D8CB8",16,"Neuronal: Glutamatergic","#00ADF8",2
+"L6 CT_4","#1B5166",95,"L6 CT","#2D8CB8",16,"Neuronal: Glutamatergic","#00ADF8",2
+"L6b_1","#C7AFD4",96,"L6b","#7044AA",17,"Neuronal: Glutamatergic","#00ADF8",2
+"L6b_2","#AA93BB",97,"L6b","#7044AA",17,"Neuronal: Glutamatergic","#00ADF8",2
+"L6b_3","#8E77A3",98,"L6b","#7044AA",17,"Neuronal: Glutamatergic","#00ADF8",2
+"L6b_4","#715B8B",99,"L6b","#7044AA",17,"Neuronal: Glutamatergic","#00ADF8",2
+"L6b_5","#553F73",100,"L6b","#7044AA",17,"Neuronal: Glutamatergic","#00ADF8",2
+"L6b_6","#39245B",101,"L6b","#7044AA",17,"Neuronal: Glutamatergic","#00ADF8",2
+"L6 IT Car3_1","#874FFF",102,"L6 IT Car3","#5100FF",14,"Neuronal: Glutamatergic","#00ADF8",2
+"L6 IT Car3_2","#631AFF",103,"L6 IT Car3","#5100FF",14,"Neuronal: Glutamatergic","#00ADF8",2
+"L6 IT Car3_3","#23068C",104,"L6 IT Car3","#5100FF",14,"Neuronal: Glutamatergic","#00ADF8",2
+"L5/6 NP_1","#9FD4AE",105,"L5/6 NP","#3E9E64",18,"Neuronal: Glutamatergic","#00ADF8",2
+"L5/6 NP_2","#86BA96",106,"L5/6 NP","#3E9E64",18,"Neuronal: Glutamatergic","#00ADF8",2
+"L5/6 NP_3","#6DA17E",107,"L5/6 NP","#3E9E64",18,"Neuronal: Glutamatergic","#00ADF8",2
+"L5/6 NP_6","#225637",108,"L5/6 NP","#3E9E64",18,"Neuronal: Glutamatergic","#00ADF8",2
+"L5/6 NP_4","#538866",109,"L5/6 NP","#3E9E64",18,"Neuronal: Glutamatergic","#00ADF8",2
+"Astro_1","#D1C9BA",110,"Astrocyte","#665C47",19,"Non-neuronal and Non-neural","#808080",3
+"Astro_2","#AAA395",111,"Astrocyte","#665C47",19,"Non-neuronal and Non-neural","#808080",3
+"Astro_6-SEAAD","#998A6B",112,"Astrocyte","#665C47",19,"Non-neuronal and Non-neural","#808080",3
+"Astro_5","#383228",113,"Astrocyte","#665C47",19,"Non-neuronal and Non-neural","#808080",3
+"Astro_3","#847D71",114,"Astrocyte","#665C47",19,"Non-neuronal and Non-neural","#808080",3
+"Astro_4","#5E574C",115,"Astrocyte","#665C47",19,"Non-neuronal and Non-neural","#808080",3
+"OPC_1","#75827F",116,"OPC","#374A45",20,"Non-neuronal and Non-neural","#808080",3
+"OPC_2","#263430",117,"OPC","#374A45",20,"Non-neuronal and Non-neural","#808080",3
+"OPC_2_1-SEAAD","#4B675F",118,"OPC","#374A45",20,"Non-neuronal and Non-neural","#808080",3
+"OPC_2_2-SEAAD","#719A8E",119,"OPC","#374A45",20,"Non-neuronal and Non-neural","#808080",3
+"Oligo_1","#B2CEC5",120,"Oligodendrocyte","#53776C",21,"Non-neuronal and Non-neural","#808080",3
+"Oligo_2","#799B8E",121,"Oligodendrocyte","#53776C",21,"Non-neuronal and Non-neural","#808080",3
+"Oligo_2_1-SEAAD","#5A9B82",122,"Oligodendrocyte","#53776C",21,"Non-neuronal and Non-neural","#808080",3
+"Oligo_4","#32443D",123,"Oligodendrocyte","#53776C",21,"Non-neuronal and Non-neural","#808080",3
+"Oligo_3","#4A6B61",124,"Oligodendrocyte","#53776C",21,"Non-neuronal and Non-neural","#808080",3
+"Endo_1","#D8BFB8",125,"Endothelial","#8D6C62",22,"Non-neuronal and Non-neural","#808080",3
+"Endo_2","#B09A93",126,"Endothelial","#8D6C62",22,"Non-neuronal and Non-neural","#808080",3
+"Endo_3","#6D615E",127,"Endothelial","#8D6C62",22,"Non-neuronal and Non-neural","#808080",3
+"VLMC_1","#979E8A",128,"VLMC","#697255",23,"Non-neuronal and Non-neural","#808080",3
+"VLMC_2_1-SEAAD","#798362",129,"VLMC","#697255",23,"Non-neuronal and Non-neural","#808080",3
+"VLMC_2","#4A503C",130,"VLMC","#697255",23,"Non-neuronal and Non-neural","#808080",3
+"VLMC_2_2-SEAAD","#A8B688",131,"VLMC","#697255",23,"Non-neuronal and Non-neural","#808080",3
+"Micro-PVM_1_1-SEAAD","#A2E2A5",132,"Microglia-PVM","#94AF97",24,"Non-neuronal and Non-neural","#808080",3
+"Micro-PVM_1","#CFE2D0",133,"Microglia-PVM","#94AF97",24,"Non-neuronal and Non-neural","#808080",3
+"Micro-PVM_2_1-SEAAD","#71AF78",134,"Microglia-PVM","#94AF97",24,"Non-neuronal and Non-neural","#808080",3
+"Micro-PVM_2","#94AF97",135,"Microglia-PVM","#94AF97",24,"Non-neuronal and Non-neural","#808080",3
+"Micro-PVM_2_3-SEAAD","#2BAF3A",136,"Microglia-PVM","#94AF97",24,"Non-neuronal and Non-neural","#808080",3
+"Micro-PVM_3-SEAAD","#7F9381",137,"Microglia-PVM","#94AF97",24,"Non-neuronal and Non-neural","#808080",3
+"Micro-PVM_4-SEAAD","#ABC6AD",138,"Microglia-PVM","#94AF97",24,"Non-neuronal and Non-neural","#808080",3
+"Micro-PVM_2_2-SEAAD","#4EAF59",139,"Microglia-PVM","#94AF97",24,"Non-neuronal and Non-neural","#808080",3
