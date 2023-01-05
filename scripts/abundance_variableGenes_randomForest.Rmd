@@ -1,7 +1,7 @@
 ---
 title: "R scripts for Inter-individual genomic and transcriptomic variation [...]"
 author: "Jeremy Miller"
-date: "October 2022"
+date: "December 2022"
 output: html_notebook
 ---
   
@@ -11,11 +11,11 @@ This notebook includes script for generating some of the figures and supplementa
   
 Prior to running this script please perform the following steps:  
 1. Return to the GitHub repository where you downloaded this script [(GitHub link)](https://github.com/AllenInstitute/human_variation/).  
-2. Download the "scripts" and input_files" folders and their context to your working directory.  
+2. Download the "scripts" and input_files" folders and their context to your working directory.  These folders include files necessary for this script and for "SEAAD_comparison.Rmd".  
 3. Download all of the subclass-level h5ad files from CELLxGENE to a "data_files" subfolder.  The link to the correct CELLxGENE instance can be found at the same [(GitHub link)](https://github.com/AllenInstitute/human_variation/) above.  When you are done, the files in "data_files" should correspond to the files listed in the "filename" columan of subclass_order.csv".  If not, please update the file names in this column to match.  
 4. If needed set the working directory:  (e.g., `setwd("PATH_TO_DIRECTORY/ouput_files/")`).  (This should happen automatically, but sometimes it doesn't work properly unless you manually set it).  
   
-Once the above is complete, run this script from a powerful machine (I am running RStudio on a Linux box with 128 GB of memory).  Specifically, this script performs analysis associated with figures 1E, 2A-B, 2D-F, S2, S3, S4, S5, and S6, and with a few points not related to figure panels.  
+Once the above is complete, run this script from a powerful machine (I am running RStudio on a Linux box with 1 TB of memory, and I think ~256GB is needed).  Specifically, this script performs analysis associated with figures 1E, 2A-B, 2D-F, S2, S3, S4, S5, and S7, and with a few points not related to figure panels.  
   
 ## Prepare the data  
   
@@ -45,12 +45,12 @@ options(future.rng.onMisuse="ignore")
 if(!file.exists("output_files")) dir.create("output_files")
 
 # NOTE: REPLACE THE LINE BELOW WITH YOUR CURRENT WORKING DIRECTORY
-workingFolder <- "/allen/programs/celltypes/workgroups/hct/HCT_RNAseq/Jeremy/Alzheimers_disease/human_variation_study_manuscript/for_upload/"
+workingFolder <- getwd()
 
 inputFolder   <- paste0(workingFolder,"input_files/")
 outputFolder  <- paste0(workingFolder,"output_files/")
 scriptFolder  <- paste0(workingFolder,"scripts/")
-dataFolder    <- "/allen/programs/celltypes/workgroups/hct/NelsonJ/Human_variation/celltype_h5ad/leiden_scVI_with_ref/" # replace with  paste0(workingFolder,"data_files/")
+dataFolder    <- paste0(workingFolder,"data_files/")
   
 ## Extra functions to limit library loading
 source(paste0(scriptFolder,"extra_functions.r"))
@@ -61,7 +61,7 @@ setwd(outputFolder)
 ```{r setup, include=FALSE}
 outputFolder  <- paste0(workingFolder,"output_files/")
 knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_knit$set(root.dir = "/allen/programs/celltypes/workgroups/hct/HCT_RNAseq/Jeremy/Alzheimers_disease/human_variation_study_manuscript/for_upload/output_files/")
+knitr::opts_knit$set(root.dir = getwd())
 ```
   
 Next, load the all of the relevant data and metadata from the project from the h5ad files and update metadata file, and save results as subclass-level Seurat objects.  
@@ -1099,7 +1099,7 @@ print(paste(date(),"- end"))
   
 Summarize these values between matched and distinct donors.  
   
-```{r summarize stats, eval=FALSE}
+```{r summarize stats}
 # Function for doing this is in the extra function file
 variance_stats <- list()
 for (ct in subclasses){
@@ -1282,6 +1282,7 @@ plt
 ggsave("exampleHighVarianceGenes_scatterplots.pdf", plot=plt, height = 4.5, width = 15)
 ```
   
+  
 Next, let's see how frequently unique genes appear in multiple cell types as highly variable.  
   
 ```{r high variable gene count, fig.height=4,fig.width=7}
@@ -1326,6 +1327,16 @@ ggsave("RF_gene_importance_vs_variable_genes.pdf", plot=plt, height = 5, width =
 ```
   
 Sex chromosome genes (even y-chromosome genes!) have higher imporantance for female than male donors.  I wonder if this is because there are fewer females overall in the study?  
+  
+  
+### Save require files
+  
+This section saves all the variables needed for use with the SEA-AD script.  This step can be skipped if you'd prefer to continue the next script without closing your working script (you could also just save everything).  
+  
+```{r save stuff for SEAAD, eval=FALSE}
+save.image("input_for_seaad_analysis.RData")
+```
+
   
 Output session information.  
   

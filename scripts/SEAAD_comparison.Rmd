@@ -1,0 +1,913 @@
+---
+title: "R scripts for SEA-AD comparison"
+author: "Jeremy Miller"
+date: "December 2022"
+output: html_notebook
+---
+  
+## Overview
+  
+This notebook includes script for generating supplemental figures for the manuscript: "Inter-individual genomic and transcriptomic variation in human cortical cell types" [(bioRxiv link)](https://www.biorxiv.org/content/10.1101/2022.10.07.511366v1.full) that relates to comparison with aged donors with and without Alzheimer's disease from the Seattle Alzheimer’s Disease Brain Cell Atlas (SEA-AD) at [sea-ad.org](sea-ad.org).  
+  
+Prior to running this script please perform the following steps:  
+1. Run the script called "abundance_variableGenes_randomForest.Rmd". **To save time reloading the data, we'd suggest running this script in the same R instance without closing R.**  
+2. Download the h5ad file that contains all the single nucleus RNA-Seq data from SEA-AD.  This is a file called "SEAAD_MTG_RNAseq_final-nuclei.2022-08-18.h5ad" that [can be downloaded here](https://sea-ad-single-cell-profiling.s3.amazonaws.com/index.html#MTG/RNAseq/). This should be saved to a folder called "SEAAD" in your working directory.  This is called only to access the metadata.  
+3. Download all the individual subclass files from the SEA-AD instance of cellxgene [at this link](https://cellxgene.cziscience.com/collections/1ca90a2d-2943-483d-b678-b809bf464c30). In this script we use the h5ad files rather than the Seurat files because L2/3 IT is too large to save in Seurat format. These files are used for the gene expression data (except L2/3 IT, which is excluded).  **Note that the data from these files is an exact match of the data on AWS, but the meta-data is incomplete, and therefore the file from AWS should be used for metadata.**  
+4. Edit the file "CZI_file_names.csv" in the "input_files" directory such that the file names match the names of your saved files from #3.  
+  
+Once the above is complete, run this script from a powerful machine (I am running RStudio on a Linux box with 1 TB of memory, and I think ~256GB is needed).  Specifically, this script performs analysis associated with figures S13 and S14, along with a few points not related to figure panels, and a few analyses not included in the manuscript.  
+  
+## Prepare the data  
+  
+First load the required libraries and options and set directory locations.  
+  
+```{r load_libraries, warning=FALSE}
+## Load libraries
+suppressPackageStartupMessages({
+  library(Seurat)       # For data storage and analysis
+  library(VennDiagram)
+  library(gridExtra)
+  library(zellkonverter)# For reading h5ad files
+  library(anndata)      # For reading h5ad files -- Note the different package from the other script
+  library(WGCNA)        # Used for generating several plots
+  library(ggplotify)    # For converting regular plots to ggplots to save
+  library(ggplot2)      # For plotting and saving plots
+  library(collapse)     # Optional: For calculating variance faster (commented options for not using this) # should replace findFromGroups
+  library(SummarizedExperiment)
+})
+options(stringsAsFactors=FALSE)
+options(future.globals.maxSize = 32000 * 1024^2) # NOTE the large amount of memory required for running these script!
+options(future.rng.onMisuse="ignore")
+
+# NOTE: REPLACE THE LINE BELOW WITH YOUR CURRENT WORKING DIRECTORY
+workingFolder <- getwd()
+
+inputFolder   <- paste0(workingFolder,"input_files/")
+outputFolder  <- paste0(workingFolder,"SEAAD/")
+scriptFolder  <- paste0(workingFolder,"scripts/")
+seaad_h5ad    <- paste0(workingFolder,"SEAAD/Whole Taxonomy_raw_AWS.2022-08-15.h5ad")
+
+## Extra functions to limit library loading
+source(paste0(scriptFolder,"extra_functions.r"))
+
+setwd(outputFolder)
+```
+  
+```{r setup, include=FALSE}
+outputFolder  <- paste0(workingFolder,"SEAAD/")
+knitr::opts_chunk$set(echo = TRUE)
+# NOTE: REPLACE THE LINE BELOW WITH YOUR CURRENT WORKING DIRECTORY
+knitr::opts_knit$set(root.dir = getwd())
+```
+  
+  
+Next, load the all of the relevant data and metadata from the previous script, which are all saved in a single R object.  This step can be skipped if you have the same R session loaded from running "abundance_variableGenes_randomForest.Rmd".  
+  
+```{r load HVS data and metadata, eval=FALSE}
+load("../output_files/input_for_seaad_analysis.RData")
+```  
+  
+Finally, read in the SEA-AD metadata (e.g., cell type assignments, data type, etc.).  We'll read in the data itself only as needed below to perform the gene variation analysis.
+  
+```{r load SEAAD metadata}
+seaad_metadata  <- read_h5ad(seaad_h5ad,backed = "r")  # Prevents reading the entire data matrix into memory
+seaad_metadata2 <- as.data.frame(seaad_metadata$obs)
+```  
+  
+  
+## Comparison of genes expressed and abundances
+  
+This section performs a variety of analyses related to overall gene expression levels (e.g., number of genes expressed per donor) and cell type abundances (e.g., number of cells mapped to each subclass for each donor). We start by calculating the abundance variance across donor and the average number of genes expressed per class, and scale by class.  Note that the SEA-AD data set is too large to compute trimmed means easily in R, so instead we used the "Genes detected" field in the metadata.  
+  
+Let's set up variables in this section.  
+  
+```{r genes and abundance setup for SEAAD data}
+keep_seaad   <- (seaad_metadata2$`Neurotypical reference`=="False")&(seaad_metadata2$method!="10xMulti")
+seaad_donors <- levels(droplevels(seaad_metadata2$`Donor ID`[keep_seaad]))
+
+# Rename subclasses from SEA-AD data set to match HVS data set
+
+seaad_metadata2$Subclass <- as.character(seaad_metadata2$Subclass)
+seaad_metadata2$Subclass[seaad_metadata2$Subclass=="Oligodendrocyte"] = "Oligo"
+seaad_metadata2$Subclass[seaad_metadata2$Subclass=="Lamp5 Lhx6"]      = "Lamp5_Lhx6"
+seaad_metadata2$Subclass[seaad_metadata2$Subclass=="Astrocyte"]       = "Astro"
+seaad_metadata2$Subclass[seaad_metadata2$Subclass=="Microglia-PVM"]   = "Micro-PVM"
+seaad_metadata2$Subclass[seaad_metadata2$Subclass=="Endothelial"]     = "Endo"
+
+# Get gene and cell counts per subclass
+geneCountsAD <- cellCountsAD <- NULL
+for (s in subclasses){
+  keep_sub <- keep_seaad&(seaad_metadata2$Subclass==s)
+  dons  <- factor(as.character(seaad_metadata2$`Donor ID`[keep_sub]),levels=seaad_donors)
+  cells <- table(dons)
+  cellCountsAD <- cbind(cellCountsAD,cells)
+  genesDetected <- rbind(seaad_metadata2$`Genes detected`[keep_sub],seaad_metadata2$`Genes detected`[keep_sub])
+  genesDetected <- findFromGroups(genesDetected,dons,mean) 
+  geneCountsAD <- cbind(geneCountsAD,as.numeric(genesDetected[1,]))
+}
+colnames(geneCountsAD) <- colnames(cellCountsAD) <- subclasses
+geneCountsAD[geneCountsAD==0] = NA
+rownames(geneCountsAD) <- rownames(cellCountsAD)
+
+# Get cell counts per subclass
+cellCountsADN <- cellCountsAD*0
+for (l in seaad_donors){
+  for (cl in classes){
+    kp <- is.element(subclasses,classGroups[[cl]])
+    cellCountsADN[l,classGroups[[cl]]] <- cellCountsAD[l,classGroups[[cl]]]/sum(cellCountsAD[l,classGroups[[cl]]])
+  }
+}
+
+# Append these variables to the original ones
+cellCounts  <- rbind(cellCounts,cellCountsAD)
+cellCountsN <- rbind(cellCountsN,cellCountsADN)
+geneCounts  <- rbind(geneCounts,geneCountsAD)
+```
+  
+  
+### Statistics by donor
+  
+Plot variation in abundances across donors by subclass.  
+
+```{r abundance values, fig.height=6,fig.width=8}
+vectorAbundance <- unlist(data.frame(cellCountsN[seaad_donors,]))
+vectorSubclass  <- NULL
+for (s in subclasses) vectorSubclass <- c(vectorSubclass,rep(s,length(seaad_donors)))
+vectorCols <- type_info$subclass_color[match(vectorSubclass,type_info$subclass_label)]
+vectorSubclass <- factor(vectorSubclass,levels=subclasses)
+
+plt <- as.ggplot(function(){
+par(mar=c(10,5,5,5))
+verboseBarplot(100*vectorAbundance+1,vectorSubclass,main="",ylab="Abundance",xlab="", ylim = c(0,100),
+                 addScatterplot = TRUE, pch=19, pt.cex=0.5, pt.col = vectorCols, las=2, col="white")
+})
+plt
+ggsave("abundance_barplots_SEAAD.pdf", plot=plt, height = 6, width = 8)
+```
+  
+  
+Plot variation in gene counts across donors by subclass.  
+
+```{r genes counts values, fig.height=6,fig.width=8}
+vectorGenes <- unlist(data.frame(geneCounts[seaad_donors,]))
+
+plt <- as.ggplot(function(){
+par(mar=c(10,5,5,5))
+verboseBarplot(vectorGenes/1000,vectorSubclass,main="",ylab="Genes expressed (K)",xlab="",ylim=c(0,15),
+               addScatterplot = TRUE, pch=19, pt.cex=0.5, pt.col = vectorCols, las=2, col="white")
+})
+plt
+ggsave("gene_counts_barplots_SEAAD.pdf", plot=plt, height = 6, width = 8)
+```
+  
+These values are much lower than for HVS.  Since the values are calculated differently from the primary analysis and it's not a key point of the paper, we do not pursue this analysis for the manuscript.  
+  
+  
+### Abundances and gene counts by class  
+  
+For abundances let's look at E/I ratios, since the fraction of non-neuronal cells was set based on FACS.  
+  
+```{r abundance by class,fig.height=5,fig.width=8}
+## Section has been updated to compare HVS (MTG Ep only) vs. SEA-AD, separated by AD vs. control or ADNC
+
+studyColors <- grey.colors(3)[3:1]
+
+## Subset HVS donors only to donors from MTG that had epilepsy
+mtg_ep_donors   <- hvs_donors[(donor_metadata[hvs_donors,]$ROI=="MTG")&
+                                       (donor_metadata[hvs_donors,]$Disease=="Epilepsy")]
+seaad_CT_donors <- intersect(seaad_donors,seaad_metadata2$`Donor ID`[seaad_metadata2$`Cognitive Status`=="No dementia"])
+seaad_AD_donors <- intersect(seaad_donors,seaad_metadata2$`Donor ID`[seaad_metadata2$`Cognitive Status`=="Dementia"])
+seaad_AD_donors <- setdiff(seaad_AD_donors,c("H21.33.020","H20.33.038")) # Exclude 2 donors with 259/260 neurons (all others have >1000)
+run_donors <- c(mtg_ep_donors,seaad_CT_donors,seaad_AD_donors)
+
+allGroupsDR <- c(rep("Adult",length(mtg_ep_donors)),rep("Aged",length(seaad_CT_donors)),rep("Dementia",length(seaad_AD_donors)))
+
+EI <- NULL
+for (l in run_donors)
+  EI <- c(EI,sum(cellCounts[l,classGroups[[2]]])/sum(cellCounts[l,classGroups[[1]]]))
+names(EI) <- run_donors
+
+# Make plots
+plt <- as.ggplot(function(){
+par(mfrow=c(1,2))
+par(mar=c(8,4,8,1))
+verboseBarplot(EI[run_donors],allGroupsDR,main="",ylab="E/I ratio", xlab="",ylim=c(0,5),
+               addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 1, 
+               cex.main = 1, pt.col = studyColors[as.factor(allGroupsDR)], col="white")
+set.seed(3)
+plot(x=jitter(rep(0,length(EI))), EI, main="",ylab="E/I ratio",ylim=c(0,5),pch=19, 
+     xlab="",cex.lab=1, xlim=c(-0.022,0.3))
+abline(h=0)
+})
+plt
+ggsave("EI_ratio_plots_SEAAD.pdf", plot=plt, height = 6, width = 8)
+```
+
+Potentially a minor increase in E/I ratio (e.g., fewer interneurons) and increased variability from Adult to age to dementia, however nothing reaches statistical significance. 
+  
+  
+## Neurosurgical vs. SEA-AD comparisons
+  
+In this section we'll assess subclass variation in neurosurgical tissue and compare it to aged donors from the SEA-AD cohort... for which tissue source is it higher?  How does it differ by subclass?  For this analysis we limit ourselves to the 45 HVS donors with epilepsy from MTG to decrease variation associated with donor metadata and try to focus mostly on neurosurgical vs. SEA-AD (which is also MTG).  We will use two methods for defining variation: (1) coefficient of variation (sd/mean) and (2) interquartile range / median.  In both cases the idea is to define the spread of the distributions.  In this case, we also divide SEA-AD donors by dementia vs. no dementia (or ADNC).  
+  
+```{r define per subclass variance}
+# seaad_donors defined above.  For these plots, no need to separate out aged donors by disease status
+ns_counts  <- cellCountsN[mtg_ep_donors,]
+ct_counts  <- cellCountsN[seaad_CT_donors,]  # to avoid rewriting the code, we use "pm" for aged donors as well here.
+ad_counts  <- cellCountsN[seaad_AD_donors,]
+
+ns_mean <- apply(ns_counts,2,mean,na.rm=TRUE)
+ns_COV  <- apply(ns_counts,2,sd,na.rm=TRUE)/ns_mean
+ns_IQR  <- apply(ns_counts,2,IQR,na.rm=TRUE)/apply(ns_counts,2,median,na.rm=TRUE)
+
+ct_mean <- apply(ct_counts,2,mean,na.rm=TRUE)
+ct_COV  <- apply(ct_counts,2,sd,na.rm=TRUE)/ct_mean
+ct_IQR  <- apply(ct_counts,2,IQR,na.rm=TRUE)/apply(ct_counts,2,median,na.rm=TRUE)
+
+ad_mean <- apply(ad_counts,2,mean,na.rm=TRUE)
+ad_COV  <- apply(ad_counts,2,sd,na.rm=TRUE)/ad_mean
+ad_IQR  <- apply(ad_counts,2,IQR,na.rm=TRUE)/apply(ad_counts,2,median,na.rm=TRUE)
+```
+  
+  
+Now let's plot the results.  
+  
+```{r plot variation comparison, fig.height=16,fig.width=12}
+# NOTE: I might need to manually adjust the xlim and ylim values below
+plot_tmp <- function(x,y,s,text.col="black",xlab="Aged donors (MTG)",ylab="Neurosurgical (MTG, epilepsy)", xyline=TRUE, ...){
+  verboseScatterplot(x,y,col="white",xlab=xlab,ylab=ylab,...)
+  if(xyline) abline(0,1,col="grey",lty="dashed")
+  text(x,y,s,col=text.col)
+}
+
+plt <- as.ggplot(function(){
+par(mfrow=c(3,3))
+plot_tmp(ns_mean,ct_mean,subclasses,subclass_colors,main="mean",log="xy",xlim=c(0.002,0.6),ylim=c(0.002,0.6),ylab="CT",xlab="Adult")
+plot_tmp(ns_COV,ct_COV,subclasses,subclass_colors,main="COV",log="xy",xlim=c(0.1,2),ylim=c(0.1,2),ylab="CT",xlab="Adult")
+plot_tmp(ns_IQR,ct_IQR,subclasses,subclass_colors,main="IQR/median",log="xy",xlim=c(0.15,5),ylim=c(0.15,5),ylab="CT",xlab="Adult")
+plot_tmp(ns_mean,ad_mean,subclasses,subclass_colors,main="mean",log="xy",xlim=c(0.002,0.6),ylim=c(0.002,0.6),ylab="AD",xlab="Adult")
+plot_tmp(ns_COV,ad_COV,subclasses,subclass_colors,main="COV",log="xy",xlim=c(0.1,2),ylim=c(0.1,2),ylab="AD",xlab="Adult")
+plot_tmp(ns_IQR,ad_IQR,subclasses,subclass_colors,main="IQR/median",log="xy",xlim=c(0.15,5),ylim=c(0.15,5),ylab="AD",xlab="Adult")
+plot_tmp(ct_mean,ad_mean,subclasses,subclass_colors,main="mean",log="xy",xlim=c(0.002,0.6),ylim=c(0.002,0.6),ylab="AD",xlab="CT")
+plot_tmp(ct_COV,ad_COV,subclasses,subclass_colors,main="COV",log="xy",xlim=c(0.1,2),ylim=c(0.1,2),ylab="AD",xlab="CT")
+plot_tmp(ct_IQR,ad_IQR,subclasses,subclass_colors,main="IQR/median",log="xy",xlim=c(0.15,5),ylim=c(0.15,5),ylab="AD",xlab="CT")
+})
+plt
+ggsave("variance_comparison_NSvsSEAAD.pdf", plot=plt, height = 16, width = 12)
+```
+  
+  
+Plot a different way.  
+  
+```{r variance comparison, fig.height=2.5, fig.width=8}
+lct <- log2(ct_COV/ns_COV)
+lad <- log2(ad_COV/ns_COV)
+
+plt <- as.ggplot(function(){
+plot(lct, col = studyColors[2], pch=18,cex=2,ylim=c(-1.4,0.7),xlab="",ylab="Log2(diff in COV)")
+points(lad, col = studyColors[3], pch=18,cex=2)
+abline(h=0)
+for (i in 1:length(lad)){
+  arrows(i,lct[i],i,lad[i],length=0.1)
+}
+})
+plt
+ggsave("variance_comarisons_NSvsSEAAD.pdf", plot=plt, height = 2.5, width = 8)
+```
+
+  
+Overall, good agreement between categories for mean expression. However, there is more variation in neurosurgical cases (even after restriction to epilepsy cases in MTG) than in aged non-demented donors, likely reflecting the a combination of mostly technical and possibly biological factors discussed in the manuscript.  However, there is a clear increase in abundance variation in demented cases vs. non-demented controls.  
+  
+Now let's visualize this by subclass.  
+  
+```{r postmortem vs neurosurgical abundance, fig.height=8,fig.width=18}
+countsME <- cellCountsN[run_donors,]
+
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,5,2,0))
+for (s in subclasses)
+  verboseBarplot(countsME[,s],allGroupsDR,main="",ylab=s,xlab="", 
+                 ylim = c(0,max(countsME[,s])),col="white",pt.col = subclass_colors[s],
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 1, cex.main = 1)
+})
+plt
+ggsave("abundance_barplots_by_NSvsSEAAD.pdf", plot=plt, height = 8, width = 18)
+```
+  
+  
+Now let's revisit gene expression changes.  We can compare gene expression differences and see how these relate to what we published in Hodge et al 2019 (for L5 only).  Let's first plot the number of genes expressed per class in postmortem vs. neurosurgical, considering on MTG donors.  
+  
+```{r postmortem vs neurosurgical genes, fig.height=8,fig.width=18}
+geneCountsME <- geneCounts[run_donors,]
+
+plt <- as.ggplot(function(){
+par(mfrow=c(4,6))
+par(mar=c(2,5,2,0))
+for (s in subclasses)
+  verboseBarplot(geneCountsME[,s]/1000,allGroupsDR,main="",ylab=paste(s,"(thousands)"),xlab="", 
+                 ylim = c(0,15),col="white",pt.col = subclass_colors[s],
+                 addScatterplot = TRUE, pch=19, pt.cex=1, cex.lab=1, cex.axis = 1, cex.main = 1)
+})
+plt
+ggsave("geneCounts_barplots_by_NSvsSEAAD.pdf", plot=plt, height = 8, width = 18)
+```
+  
+  
+As above, I don't think we can trust the comparison of number of genes expressed between adult and aged donors.  However, most neurons have fewer genes expressed per cell type in donors with vs. donors without dementia, which is not surprising.  
+  
+```{r genes in PM vs. NS, fig.height=5,fig.width=11}
+df     = data.frame(X=colMeans(geneCountsME[cat=="PM",],na.rm=TRUE),errX=apply(geneCountsME[cat=="PM",],2,sd,na.rm=TRUE),
+                    Y=colMeans(geneCountsME[cat=="NS",],na.rm=TRUE),errY=apply(geneCountsME[cat=="NS",],2,sd,na.rm=TRUE))/1000
+rangeX = range(c(df$X + df$errX, df$X - df$errX))
+rangeY = range(c(df$Y + df$errY, df$Y - df$errY))
+
+plt <- as.ggplot(function(){
+par(mfrow=c(1,2))
+plot(df$X, df$Y, xlim = rangeX, ylim = rangeY,xlab="Genes detected (thousands, postmortem)",
+     ylab="Genes detected (thousands, neurosurgical)",pch=19,cex=2,col=subclass_colors)
+segments(df$X, df$Y - df$errY, df$X, df$Y + df$errY,col=subclass_colors)
+segments(df$X - df$errX, df$Y, df$X + df$errX, df$Y,col=subclass_colors)
+abline(0,1,col="grey")
+
+verboseScatterplot(df$X, df$Y, xlim = rangeX, ylim = rangeY,xlab="Genes detected (thousands, postmortem)",
+     ylab="Genes detected (thousands, neurosurgical)",pch=19,cex=0.25,col=subclass_colors)
+segments(df$X, df$Y - df$errY, df$X, df$Y + df$errY,col=subclass_colors)
+segments(df$X - df$errX, df$Y, df$X + df$errX, df$Y,col=subclass_colors)
+abline(0,1,col="grey")
+text(df$X, df$Y, subclasses,col=subclass_colors)
+})
+plt
+ggsave("geneCounts_means_scatterplots_by_NSvsSEAAD.pdf", plot=plt, height = 5, width = 11)
+```
+  
+  
+Compare the variation in neurosurgical vs. postmortem tissues.  
+  
+```{r SD genes detected,fig.height=5,fig.width=4}
+x = apply(geneCountsME,1,sd,na.rm=TRUE)/apply(geneCountsME,1,mean,na.rm=TRUE)
+verboseBarplot(x,allGroupsDR,xlab="",ylab="COV genes detected",col="white",addScatterplot = TRUE, ylim=c(0,0.5))
+```
+  
+The variation in number of genes expressed per cell is highest in aged, non-demented donors, although these distributions are quite overlapping.  I think additional work (outside the scope of present efforts) would be needed to appropriately interpret this result.  
+  
+  
+## High variance genes in aged vs. adult donors
+  
+This section is aimed at identifying the genes with strong donor signatures.  More specifically, we seek to ask which genes have variance that is highly donor-dependent (e.g., random cell pairs from different donors are more variable than pairs of cells from the same donor), rather than strictly defining variance of a given gene.  This analysis repeats the gene variance analysis from figure 1, considering only patients with epilepsy in MTG and comparing the results to those from SEA-AD cases with and without dementia. Since my R instance is unable to handle reading in the complete SEA data from AWS, instead I use the cellxgene files above, which are separated by subclass.  
+  
+Start by calculating expressed genes in the HVS data set.  As a start, we'll choose the ones that are expressed only in the HVS data and that are also included in the SEA-AD transcriptome, but we might need to also filter for ones expressed in SEA-AD for a fair comparison  We will use these genes for HVS and SEA-AD.  
+  
+```{r cell type genes}
+# Read in the conversion of ENSG to gene symbol for the SEAAD data set to compare with HVS data set
+#  NOTE: any of the h5ad files downloaded from cellxgene could replace genesRead.h5ad below (this is just the microglial one renamed)
+dataIn     <- readH5AD("CZI/genesRead.h5ad")
+genesSEAAD <- as.character(rowData(dataIn)$feature_name)
+
+# Find cell type genes
+cellsPerPermutation  = 24
+kpGn <- list()
+for (ct in subclasses){
+  tmpSamp    <- subsampleCells(seurat_all[[ct]]$donor_name,cellsPerPermutation)&is.element(seurat_all[[ct]]$donor_name,mtg_ep_donors)
+  # Speed up quantile calculation and make it fairer by subsampling by donor (above) and by using fnth function from collapse library
+  kpGn[[ct]] <- fnth(t(as.matrix(seurat_all[[ct]]@assays$RNA@data[,tmpSamp])),n=0.75)>0  
+  # Include genes expressed in >25% of cells
+  kpGn[[ct]][!is.element(names(kpGn[[ct]]),genesSEAAD)] = FALSE
+  print(paste0(ct,": ",sum(kpGn[[ct]])," variable genes."))
+}
+```
+  
+  
+### HVS data analysis
+  
+Perform the calculate of gene variance and collect relevant variables from the 45 epilepsy donors from MTG.  (This is a long code block.)  
+  
+```{r gene variation in HVS, warning=FALSE}
+# Variable set up
+cellsPerSubclass <- 4500 # Average of ~100 cell pairs per donor
+gene_variances   <- gene_variances_permuted <- gene_diffs <- gene_diffs_permuted <- list()
+
+# Calculate differences between pairs of cells and associate variation of these differences
+print(paste(date(),"- start"))
+for (ct in subclasses){
+  tb        <- table(seurat_all[[ct]]$donor_name)
+  tmpDonors <- intersect(mtg_ep_donors,names(tb)[tb>=4])
+  tmpSamp   <- is.element(seurat_all[[ct]]$donor_name,tmpDonors)
+  set.seed(which(subclasses==ct))
+  donor1    <- sample(tmpDonors,cellsPerSubclass*3,replace=TRUE)
+  set.seed(which(subclasses==ct)+1)
+  donor2    <- sample(tmpDonors,cellsPerSubclass*3,replace=TRUE)
+  kpTmp     <- donor1!=donor2
+  donor1    <- donor1[kpTmp][1:cellsPerSubclass]
+  donor2    <- donor2[kpTmp][1:cellsPerSubclass]
+  cell1a <- cell1b <- cell2a <- NULL
+  for (z in 1:cellsPerSubclass){
+    c1a    <- sample(which(seurat_all[[ct]]$donor_name==donor1[z]),1)
+    cell1a <- c(cell1a,c1a)
+    cell1b <- c(cell1b,sample(which((seurat_all[[ct]]$donor_name==donor1[z])&((1:length(seurat_all[[ct]]$donor_name))!=c1a)),1))
+    cell2a <- c(cell2a,sample(which(seurat_all[[ct]]$donor_name==donor2[z]),1))
+  }
+  
+  # Remove duplicates
+  firstOne   <- match(unique(cell1a*(cell1b/7)^2),cell1a*(cell1b/7)^2)
+  countFirst <- length(firstOne)
+  
+  datTmp     <- seurat_all[[ct]]@assays$RNA@data[kpGn[[ct]],c(cell1a[firstOne],cell1b[firstOne],cell2a[firstOne])]
+  gene_diffs[[ct]]          <- abs(datTmp[,(1:countFirst)]-datTmp[,(countFirst+1):(2*countFirst)])
+  gene_diffs_permuted[[ct]] <- abs(datTmp[,(1:countFirst)]-datTmp[,(2*countFirst+1):(3*countFirst)])
+  gene_variances[[ct]]          <- t(fvar(t(as.matrix(gene_diffs[[ct]])),rep("All",countFirst)))
+  gene_variances_permuted[[ct]] <- t(fvar(t(as.matrix(gene_diffs_permuted[[ct]])),rep("All",countFirst)))
+  print(paste("Cell count:",ct,"=",dim(gene_diffs[[ct]])[2]))
+  collectGarbage()
+}
+print(paste(date(),"- end"))
+
+print("Now summarize these values between matched and distinct donors.")
+variance_stats_hvs <- list()
+for (ct in subclasses){
+  out  <- t(apply(cbind(gene_diffs_permuted[[ct]],gene_diffs[[ct]]),1,getStats))
+  out  <- cbind(out,p.adjust(out[,6],"BH")) # Define FDR corrected p-values  # qvalue(out[,6])$qvalue)#
+  colnames(out) <- c("permuted_var","actual_var","permuted_var_sd",
+	                   "actual_var_sd","Tstat","Pvalue","FDR_Pvalue")
+  variance_stats_hvs[[ct]] <- as.data.frame(out)
+}
+print("Summarization complete.")
+```
+  
+  
+Which genes (and how many) per subclass are significant in each direction after FDR correction?
+  
+```{r which are significant genes HVS}
+## Dynamic selection of threshold to ensure no random genes
+thresh = 1
+for (ct in subclasses) 
+  thresh=min(c(thresh,variance_stats_hvs[[ct]]$FDR_Pvalue[variance_stats_hvs[[ct]]$Tstat<0]))
+print(paste("Dynamic threshold (HVS):",signif(thresh,3)))
+varGenes_hvs <- NULL
+
+for (ct in subclasses){
+  tmp  <- abs(10*(variance_stats_hvs[[ct]]$Tstat<0)+(variance_stats_hvs[[ct]]$FDR_Pvalue<thresh)-5)-3
+  out  <- data.frame(gene=rownames(variance_stats_hvs[[ct]]),direction=c("high","NS","low")[tmp],subclass=ct)
+  varGenes_hvs <- rbind(varGenes_hvs,out)
+}
+
+## Output the genes to a table
+write.csv(varGenes_hvs,"variable_genes_hvsEp.csv",row.names = FALSE)
+
+## Write counts to screen
+data.frame(table(varGenes_hvs$subclass[varGenes_hvs$direction=="high"]))
+```
+  
+  
+### SEA-AD data analysis
+  
+Perform the calculate of gene variance and collect relevant variables from the 84 SEA-AD donors from MTG.  Note the first step of reading in a table that links file names from cellxgene with subclass name.  Also note that we overwrite the data at each iteration of the subclass to save memory. Also note that we read in the data using a different function.  
+**Note: you may need to change all instances of `Donor ID` and `Donor.ID` below to `donor_id` before running.** 
+**Note: the index of the sparse matrix for L2/3 IT is larger than the max number storable in a 32-bit integer, which means that it is not possible to read this file into R, so all values get read in as "0".  For a more careful analysis, python will need to be used.**  
+  
+```{r gene variation in SEAAD, warning=FALSE}
+# Read in file conversion table
+convert <- read.csv("../input_files/CZI_file_names.csv",row.names=1)
+
+# Variable setup
+gene_variancesCT <- gene_variances_permutedCT <- gene_diffsCT <- gene_diffs_permutedCT <- list()
+gene_variancesAD <- gene_variances_permutedAD <- gene_diffsAD <- gene_diffs_permutedAD <- list()
+
+# Calculate differences between pairs of cells and associate variation of these differences
+print(paste(date(),"- start"))
+for (ct in subclasses){
+  print(paste("========== Starting",ct,"=========="))
+  # Read in the cellxgene table for this subclass
+  fn     <- paste0("CZI/",convert[ct,])
+  dataIn <- readH5AD(fn)
+  countsTmp <- assay(dataIn,"X")
+  rownames(countsTmp) <- genesSEAAD
+  seu <- CreateSeuratObject(counts=countsTmp)  # seu is the seurat object with the data
+  met <- as.data.frame(colData(dataIn))
+  seu <- AddMetaData(seu,met)
+    
+  # Subset to relevant CT and AD cells
+  keep_sub  <- keep_seaad&(seaad_metadata2$Subclass==ct)&is.element(seaad_metadata2$`Donor ID`,seaad_CT_donors)
+  samplesCT <- seaad_metadata2$sample_id[keep_sub]  # CONFIRM CORRECT IDS, then apply the cell sampling AFTER this step
+  keep_sub  <- keep_seaad&(seaad_metadata2$Subclass==ct)&is.element(seaad_metadata2$`Donor ID`,seaad_AD_donors)
+  samplesAD <- seaad_metadata2$sample_id[keep_sub]  # CONFIRM CORRECT IDS, then apply the cell sampling AFTER this step
+  seuCT <- seu[,samplesCT]
+  seuCT <- SetAssayData(seuCT,new.data=logCPM(seuCT@assays$RNA@counts),slot="data")
+  seuAD <- seu[,samplesAD]
+  seuAD <- SetAssayData(seuAD,new.data=logCPM(seuAD@assays$RNA@counts),slot="data")
+
+  # Clear memory
+  rm(seu, dataIn, countsTmp)
+  collectGarbage()
+  
+  # Find gene information for SEA-AD donors without dementia
+  tb        <- table(seuCT$Donor.ID)
+  tmpDonors <- names(tb)[tb>=4]
+  tmpSamp   <- is.element(seuCT$Donor.ID,tmpDonors)
+  set.seed(which(subclasses==ct))
+  donor1    <- sample(tmpDonors,cellsPerSubclass*3,replace=TRUE)
+  set.seed(which(subclasses==ct)+1)
+  donor2    <- sample(tmpDonors,cellsPerSubclass*3,replace=TRUE)
+  kpTmp     <- donor1!=donor2
+  donor1    <- donor1[kpTmp][1:cellsPerSubclass]
+  donor2    <- donor2[kpTmp][1:cellsPerSubclass]
+  cell1a <- cell1b <- cell2a <- NULL
+  for (z in 1:cellsPerSubclass){
+    c1a    <- sample(which(seuCT$Donor.ID==donor1[z]),1)
+    cell1a <- c(cell1a,c1a)
+    cell1b <- c(cell1b,sample(which((seuCT$Donor.ID==donor1[z])&((1:length(seuCT$Donor.ID))!=c1a)),1))
+    cell2a <- c(cell2a,sample(which(seuCT$Donor.ID==donor2[z]),1))
+  }
+  firstOne   <- match(unique(cell1a*(cell1b/7)^2),cell1a*(cell1b/7)^2)
+  countFirst <- length(firstOne)
+  gn         <- names(kpGn[[ct]])[kpGn[[ct]]]
+  datTmp     <- seuCT@assays$RNA@data[gn,c(cell1a[firstOne],cell1b[firstOne],cell2a[firstOne])]
+  gene_diffsCT[[ct]]          <- abs(datTmp[,(1:countFirst)]-datTmp[,(countFirst+1):(2*countFirst)])
+  gene_diffs_permutedCT[[ct]] <- abs(datTmp[,(1:countFirst)]-datTmp[,(2*countFirst+1):(3*countFirst)])
+  gene_variancesCT[[ct]]          <- t(fvar(t(as.matrix(gene_diffsCT[[ct]])),rep("All",countFirst)))
+  gene_variances_permutedCT[[ct]] <- t(fvar(t(as.matrix(gene_diffs_permutedCT[[ct]])),rep("All",countFirst)))
+  print(paste("Cell count (CT):",ct,"=",dim(gene_diffsCT[[ct]])[2]))
+  
+  # Find gene information for SEA-AD donors with dementia
+  tb        <- table(seuAD$Donor.ID)
+  tmpDonors <- names(tb)[tb>=4]
+  tmpSamp   <- is.element(seuAD$Donor.ID,tmpDonors)
+  set.seed(which(subclasses==ct))
+  donor1    <- sample(tmpDonors,cellsPerSubclass*3,replace=TRUE)
+  set.seed(which(subclasses==ct)+1)
+  donor2    <- sample(tmpDonors,cellsPerSubclass*3,replace=TRUE)
+  kpTmp     <- donor1!=donor2
+  donor1    <- donor1[kpTmp][1:cellsPerSubclass]
+  donor2    <- donor2[kpTmp][1:cellsPerSubclass]
+  cell1a <- cell1b <- cell2a <- NULL
+  for (z in 1:cellsPerSubclass){
+    c1a    <- sample(which(seuAD$Donor.ID==donor1[z]),1)
+    cell1a <- c(cell1a,c1a)
+    cell1b <- c(cell1b,sample(which((seuAD$Donor.ID==donor1[z])&((1:length(seuAD$Donor.ID))!=c1a)),1))
+    cell2a <- c(cell2a,sample(which(seuAD$Donor.ID==donor2[z]),1))
+  }
+  firstOne   <- match(unique(cell1a*(cell1b/7)^2),cell1a*(cell1b/7)^2)
+  countFirst <- length(firstOne)
+  gn         <- names(kpGn[[ct]])[kpGn[[ct]]]
+  datTmp     <- seuAD@assays$RNA@data[gn,c(cell1a[firstOne],cell1b[firstOne],cell2a[firstOne])]
+  gene_diffsAD[[ct]]          <- abs(datTmp[,(1:countFirst)]-datTmp[,(countFirst+1):(2*countFirst)])
+  gene_diffs_permutedAD[[ct]] <- abs(datTmp[,(1:countFirst)]-datTmp[,(2*countFirst+1):(3*countFirst)])
+  gene_variancesAD[[ct]]          <- t(fvar(t(as.matrix(gene_diffsAD[[ct]])),rep("All",countFirst)))
+  gene_variances_permutedAD[[ct]] <- t(fvar(t(as.matrix(gene_diffs_permutedAD[[ct]])),rep("All",countFirst)))
+  print(paste("Cell count (AD):",ct,"=",dim(gene_diffsAD[[ct]])[2]))
+  
+  # Clear memory
+  rm(seuCT, setAD, datTmp)
+  collectGarbage()
+}
+print(paste(date(),"- end"))
+
+
+print("Now summarize these values between matched and distinct donors.")
+variance_stats_CT <- variance_stats_AD <- list()
+for (ct in subclasses){
+  out  <- t(apply(cbind(gene_diffs_permutedCT[[ct]],gene_diffsCT[[ct]]),1,getStats))
+  out  <- cbind(out,p.adjust(out[,6],"BH")) # Define FDR corrected p-values  # qvalue(out[,6])$qvalue)#
+  colnames(out) <- c("permuted_var","actual_var","permuted_var_sd",
+	                   "actual_var_sd","Tstat","Pvalue","FDR_Pvalue")
+  variance_stats_CT[[ct]] <- as.data.frame(out)
+  
+  out  <- t(apply(cbind(gene_diffs_permutedAD[[ct]],gene_diffsAD[[ct]]),1,getStats))
+  out  <- cbind(out,p.adjust(out[,6],"BH")) # Define FDR corrected p-values  # qvalue(out[,6])$qvalue)#
+  colnames(out) <- c("permuted_var","actual_var","permuted_var_sd",
+	                   "actual_var_sd","Tstat","Pvalue","FDR_Pvalue")
+  variance_stats_AD[[ct]] <- as.data.frame(out)
+}
+print("Summarization complete.")
+
+save(gene_diffsCT, gene_diffs_permutedCT, gene_variancesCT, gene_variances_permutedCT,
+     gene_diffsAD, gene_diffs_permutedAD, gene_variancesAD, gene_variances_permutedAD,
+     gene_diffs, gene_diffs_permuted, gene_variances, gene_variances_permuted, file="gene_variances_info.RData")
+```
+  
+  
+### Count variable genes
+
+Which genes (and how many) per subclass are significant in each direction after FDR correction?
+  
+```{r which are significant genes SEAAD}
+## Dynamic selection of threshold to ensure no random genes
+thresh_hvs = 1
+for (ct in subclasses) 
+  thresh_hvs=min(c(thresh_hvs,variance_stats_hvs[[ct]]$FDR_Pvalue[variance_stats_hvs[[ct]]$Tstat<0]))
+print(paste("Dynamic threshold (HVS):",signif(thresh_hvs,3)))
+varGenes_hvs <- NULL
+
+for (ct in subclasses){
+  tmp  <- abs(10*(variance_stats_hvs[[ct]]$Tstat<0)+(variance_stats_hvs[[ct]]$FDR_Pvalue<thresh_hvs)-5)-3
+  out  <- data.frame(gene=rownames(variance_stats_hvs[[ct]]),direction=c("high","NS","low")[tmp],subclass=ct)
+  varGenes_hvs <- rbind(varGenes_hvs,out)
+}
+
+## Non-demented SEA-AD 
+thresh_CT = 1
+for (ct in subclasses){
+  variance_stats_CT[[ct]][is.na(variance_stats_CT[[ct]])] = 1
+  thresh_CT=min(c(thresh_CT,variance_stats_CT[[ct]]$FDR_Pvalue[variance_stats_CT[[ct]]$Tstat<0]))
+}
+print(paste("Dynamic threshold (SEA-AD: non-demented):",signif(thresh_CT,3)))
+varGenes_CT <- NULL
+
+for (ct in subclasses){
+  tmp  <- abs(10*(variance_stats_CT[[ct]]$Tstat<0)+(variance_stats_CT[[ct]]$FDR_Pvalue<thresh_CT)-5)-3
+  out  <- data.frame(gene=rownames(variance_stats_CT[[ct]]),direction=c("high","NS","low")[tmp],subclass=ct)
+  varGenes_CT <- rbind(varGenes_CT,out)
+}
+
+## Demented SEA-AD 
+thresh_AD = 1
+for (ct in subclasses){
+  variance_stats_AD[[ct]][is.na(variance_stats_AD[[ct]])] = 1
+  thresh_AD=min(c(thresh_AD,variance_stats_AD[[ct]]$FDR_Pvalue[variance_stats_AD[[ct]]$Tstat<0]))
+}
+print(paste("Dynamic threshold (SEA-AD: non-demented):",signif(thresh_AD,3)))
+varGenes_AD <- NULL
+
+for (ct in subclasses){
+  tmp  <- abs(10*(variance_stats_AD[[ct]]$Tstat<0)+(variance_stats_AD[[ct]]$FDR_Pvalue<thresh_AD)-5)-3
+  out  <- data.frame(gene=rownames(variance_stats_AD[[ct]]),direction=c("high","NS","low")[tmp],subclass=ct)
+  varGenes_AD <- rbind(varGenes_AD,out)
+}
+
+## Write counts to screen
+cnts <- data.frame(adult=table(factor(varGenes_hvs$subclass[varGenes_hvs$direction=="high"],levels=subclasses)),
+           nondemented=table(factor(varGenes_CT$subclass[varGenes_CT$direction=="high"],levels=subclasses)),
+           demented=table(factor(varGenes_AD$subclass[varGenes_AD$direction=="high"],levels=subclasses)))
+cnts <- as.matrix(cnts[,c(2,4,6)])
+rownames(cnts) <- subclasses
+colnames(cnts) <- c("adult","aged","dementia")
+cnts
+
+## Output the genes to a table
+write.csv(cnts,"variable_gene_counts.csv",row.names = FALSE)
+```  
+  
+Plot this table.
+  
+```{r barplot of counts, fig.height=5, fig.width=8}
+# studyColors defined above
+plt <- as.ggplot(function(){
+par(mar=c(10,5,1,1))
+barplot(t(cnts)/1000,beside = TRUE,las=2,legend=TRUE, ylab="Number of variable genes (thousands)", col=studyColors)
+})
+plt
+ggsave("variable_gene_counts_NSandSEAAD.pdf", plot=plt, height = 5, width = 8)
+```
+  
+  
+What if we scale by the number of expressed genes, since non-neuronal types generally have fewer genes expressed?
+  
+```{r scaled gene count, fig.height=6.5, fig.width=8}
+geneCountPerSubclass <- cbind(table(varGenes_hvs$subclass)[subclasses],
+                              table(varGenes_CT$subclass)[subclasses],
+                              table(varGenes_AD$subclass)[subclasses])
+
+plt <- as.ggplot(function(){
+par(mar=c(10,5,1,1))
+barplot(t(cnts/geneCountPerSubclass),las=2,xlab="",beside = TRUE,las=2,ylim=c(0,0.8),
+        ylab="Fraction of expressed genes with high variance", col=studyColors)
+abline(h=c(0.25,0.5,0.75),lty="dashed",col="grey")
+})
+plt
+ggsave("variance_gene_fraction_barplot_NSandSEAAD.pdf", plot=plt, height = 6.5, width = 9)
+```
+  
+Some key takeaways: (1) There is generally higher variability in data from this study than in SEA-AD data from non-demented aged donors; (2) Aged donors with dementia have substantially more variable genes than those without dementia; (3) Generally much less variability in SEA-AD for glial than reported here (although in both astrocyte have the largest number of genes in the glial types) and (4) results of high glutamatergic variability agree between studies.  
+  
+  
+### Find common and distinct genes
+
+```{r overlap genes, fig.height=4,fig.width=4}
+print.ggExtraPlot <- function(x, newpage = is.null(vp), vp = NULL,...) {
+  if (newpage) grid::grid.newpage()
+  grid::grid.draw(x)
+}
+for (ct in subclasses){
+  geneList <- list(adult=varGenes_hvs$gene[(varGenes_hvs$subclass==ct)&(varGenes_hvs$direction=="high")], 
+                   aged=varGenes_CT$gene[(varGenes_CT$subclass==ct)&(varGenes_CT$direction=="high")],
+                   dementia=varGenes_AD$gene[(varGenes_AD$subclass==ct)&(varGenes_AD$direction=="high")])
+  print.ggExtraPlot(venn.diagram(geneList,filename=NULL,main=ct))
+}
+```
+  
+  
+Overall, the overlap in variable genes between studies seems quite high.  Let's merge by class to make things simpler, including only genes recur in at least 1/2 of the subclasses.    
+
+```{r overlap genes by class, fig.height=4,fig.width=4}
+varGenes_hvs2 <- varGenes_hvs
+varGenes_hvs2$direction[varGenes_hvs2$subclass=="L2/3 IT"] = "NS"  # Since these were not readable in SEA-AD, we exclude these
+varGene_classList <- list()
+for (cl in sort(unique(classes))){
+  adult_list <- varGenes_hvs2$gene[is.element(varGenes_hvs2$subclass,names(classes)[classes==cl])&(varGenes_hvs2$direction=="high")]
+  adult_list <- names(table(adult_list))[table(adult_list)>=(sum(classes==cl)/1.5)]
+  aged_list  <- varGenes_CT$gene[is.element(varGenes_CT$subclass,names(classes)[classes==cl])&(varGenes_CT$direction=="high")]
+  aged_list  <- names(table(aged_list))[table(aged_list)>=(sum(classes==cl)/1.5)]
+  dem_list   <- varGenes_AD$gene[is.element(varGenes_AD$subclass,names(classes)[classes==cl])&(varGenes_AD$direction=="high")]
+  dem_list   <- names(table(dem_list))[table(dem_list)>=(sum(classes==cl)/1.5)] 
+  geneList   <- list(adult=adult_list, aged=aged_list, dementia=dem_list)
+  varGene_classList[[cl]] <- geneList
+  print.ggExtraPlot(venn.diagram(geneList,filename=NULL,main=cl))
+}
+```
+  
+Generate a set of randomized marker genes as a "expected" value.    
+
+```{r overlap genes by class randomized, fig.height=4,fig.width=4}
+## Randomized lists
+set.seed(1)
+rand_hvs <- varGenes_hvs2
+rand_CT  <- varGenes_CT
+rand_AD  <- varGenes_AD
+for (ct in subclasses){
+  rand_hvs$direction[rand_hvs$subclass==ct] <- sample(rand_hvs$direction[rand_hvs$subclass==ct],sum(rand_hvs$subclass==ct))
+  rand_CT$direction[rand_CT$subclass==ct]   <- sample(rand_CT$direction[rand_CT$subclass==ct],sum(rand_CT$subclass==ct))
+  rand_AD$direction[rand_AD$subclass==ct]   <- sample(rand_AD$direction[rand_AD$subclass==ct],sum(rand_AD$subclass==ct))
+}
+
+for (cl in sort(unique(classes))){
+  adult_list <- rand_hvs$gene[is.element(rand_hvs$subclass,names(classes)[classes==cl])&(rand_hvs$direction=="high")]
+  adult_list <- names(table(adult_list))[table(adult_list)>=(sum(classes==cl)/1.5)]
+  aged_list  <- rand_CT$gene[is.element(rand_CT$subclass,names(classes)[classes==cl])&(rand_CT$direction=="high")]
+  aged_list  <- names(table(aged_list))[table(aged_list)>=(sum(classes==cl)/1.5)]
+  dem_list   <- rand_AD$gene[is.element(rand_AD$subclass,names(classes)[classes==cl])&(rand_AD$direction=="high")]
+  dem_list   <- names(table(dem_list))[table(dem_list)>=(sum(classes==cl)/1.5)] 
+  geneListR  <- list(adult=adult_list, aged=aged_list, dementia=dem_list)
+  print.ggExtraPlot(venn.diagram(geneListR,filename=NULL,main=cl))
+}
+```
+  
+Write out some lists for visual inspection and enrichment analysis using ToppGene.  
+  
+```{r}
+print_lists <- NULL
+for (cl in sort(unique(classes))){
+  adult    <- setdiff(varGene_classList[[cl]]$adult,c(varGene_classList[[cl]]$aged,varGene_classList[[cl]]$dementia))
+  aged     <- setdiff(varGene_classList[[cl]]$aged,c(varGene_classList[[cl]]$adult,varGene_classList[[cl]]$dementia))
+  dementia <- setdiff(varGene_classList[[cl]]$dementia,c(varGene_classList[[cl]]$aged,varGene_classList[[cl]]$adult))
+  all      <- intersect(varGene_classList[[cl]]$dementia,intersect(varGene_classList[[cl]]$aged,varGene_classList[[cl]]$adult))
+  print_lists <- rbind(print_lists,
+                       cbind(adult,"adult only",cl),
+                       cbind(aged,"aged only",cl),
+                       cbind(dementia,"dementia only",cl),
+                       cbind(all,"all groups",cl))
+}
+colnames(print_lists) <- c("Gene","Category","Class")
+write.csv(print_lists,"variable_gene_lists.csv",row.names = FALSE)
+
+# Also print the complete list of significant genes
+out <- rbind(data.frame(varGenes_hvs,group="adult"),
+             data.frame(varGenes_CT,group="aged, non-demented"),
+             data.frame(varGenes_AD,group="aged, demented"))
+out <- out[out$direction=="high",c("gene","subclass","group")]
+write.csv(out,"variable_genes_SEAADvsNS.csv",row.names=FALSE)
+```
+  
+  
+Nothing particularly useful came out of the ToppGene analysis.  
+
+```{r prepare the seurat objects for Pvalb}
+ct = "Pvalb"
+# Read in the cellxgene table for this subclass
+fn     <- paste0("CZI/",convert[ct,])
+dataIn <- readH5AD(fn)
+countsTmp <- assay(dataIn,"X")
+rownames(countsTmp) <- genesSEAAD
+seu <- CreateSeuratObject(counts=countsTmp)  # seu is the seurat object with the data
+met <- as.data.frame(colData(dataIn))
+seu <- AddMetaData(seu,met)
+    
+# Subset to relevant CT and AD cells
+keep_sub  <- keep_seaad&(seaad_metadata2$Subclass==ct)&is.element(seaad_metadata2$`Donor ID`,seaad_CT_donors)
+samplesCT <- seaad_metadata2$sample_id[keep_sub]  # CONFIRM CORRECT IDS, then apply the cell sampling AFTER this step
+keep_sub  <- keep_seaad&(seaad_metadata2$Subclass==ct)&is.element(seaad_metadata2$`Donor ID`,seaad_AD_donors)
+samplesAD <- seaad_metadata2$sample_id[keep_sub]  # CONFIRM CORRECT IDS, then apply the cell sampling AFTER this step
+seuCT <- seu[,samplesCT]
+seuCT <- SetAssayData(seuCT,new.data=logCPM(seuCT@assays$RNA@counts),slot="data")
+seuAD <- seu[,samplesAD]
+seuAD <- SetAssayData(seuAD,new.data=logCPM(seuAD@assays$RNA@counts),slot="data")
+
+# Prepare seurat objects
+seuHVS <- seurat_all[[ct]][,is.element(seurat_all[[ct]]$donor_name,mtg_ep_donors)]
+Idents(seuHVS) <- "donor_name"
+Idents(seuCT)  <- "Donor.ID"  # May need to call this "donor-id" or something similar
+Idents(seuAD)  <- "Donor.ID"  # May need to call this "donor-id" or something similar
+```
+  
+  
+Calculate coefficient of variation of gene donor means across the three data sets and find the most distinct genes in Pvalb subclass.  
+  
+```{r calculate mean COVs}
+mean_donor_HVS <- t(fmean(t(as.matrix(seuHVS@assays$RNA@data)),droplevels(seuHVS@meta.data$donor_name)))
+meanHVS <- rowMeans(mean_donor_HVS)
+sdHVS   <- rowSds(mean_donor_HVS); names(sdHVS) = names(meanHVS)
+covHVS  <- sdHVS/(meanHVS+0.0001)
+mean_donor_CT <- t(fmean(t(as.matrix(seuCT@assays$RNA@data)),droplevels(seuCT@meta.data$Donor.ID)))
+meanCT  <- rowMeans(mean_donor_CT)
+sdCT    <- rowSds(mean_donor_CT); names(sdCT) = names(meanCT)
+covCT   <- sdCT/(meanCT+0.0001)
+mean_donor_AD <- t(fmean(t(as.matrix(seuAD@assays$RNA@data)),droplevels(seuAD@meta.data$Donor.ID)))
+meanAD  <- rowMeans(mean_donor_AD)
+sdAD    <- rowSds(mean_donor_AD); names(sdAD) = names(meanAD)
+covAD   <- sdAD/(meanAD+0.0001)
+kpGn    <- intersect(names(meanHVS)[(meanHVS>=1)],names(meanCT)[(meanCT>=1)&(meanAD>=1)])
+length(kpGn)
+```
+  
+  
+Plot coefficient of variation of gene donor means across the three data sets and find the most distinct genes in Pvalb subclass.  
+  
+```{r plot mean COVs, fig.height=10, fig.width=15}
+plt <- as.ggplot(function(){
+par(mfrow=c(2,3))
+verboseScatterplot(covHVS[kpGn],covCT[kpGn],xlab="Adult",ylab="Aged, no dementia",cex=0.5,pch=10); abline(0,1)
+verboseScatterplot(covHVS[kpGn],covAD[kpGn],xlab="Adult",ylab="Aged, dementia",cex=0.5,pch=10); abline(0,1)
+verboseScatterplot(pmin(covCT[kpGn],0.8),pmin(covAD[kpGn],0.8),xlab="Aged, no dementia",ylab="Aged, dementia",cex=0.5,pch=10); abline(0,1)
+
+verboseScatterplot(meanCT[kpGn],meanAD[kpGn],xlab="Average, no dementia",ylab="Average, dementia",cex=0.5,pch=10); abline(0,1)
+verboseScatterplot(pmin(sdCT[kpGn],2),pmin(sdAD[kpGn],2),xlab="Stdev, no dementia",ylab="Stdev, dementia",cex=0.5,pch=10); abline(0,1)
+})
+plt
+ggsave("COV_scatterplot_comparisons_NSandSEAAD.pdf", plot=plt, height = 10, width = 15)
+```
+  
+  
+Plot some example genes that are either commonly variable or selectively variable in this study or SEA-AD in Pvalb interneurons.  
+  
+```{r plot variable genes, fig.height=7, fig.width=14}
+gn <- c("MALAT1")  #c("CNTNAP2","DLGAP1",,"NRXN3","NRXN1",)
+plotGene <- unique(c("XIST","MALAT1","LRRC37A","FOS","RPL41","LINC00342"))
+
+# Trim outliers for better visualization of cross-donor variation
+kpHVS = seuHVS[plotGene,apply(as.matrix(FetchData(seuHVS,gn)),1,min)>0]
+kpCT  = seuCT[plotGene,apply(as.matrix(FetchData(seuCT,gn)),1,min)>0]
+kpAD  = seuAD[plotGene,apply(as.matrix(FetchData(seuAD,gn)),1,min)>0]
+for (gn in plotGene){
+  a = as.matrix(kpHVS@assays$RNA@data)[gn,]
+  kpHVS@assays$RNA@data[gn,(a>quantile(a,0.999))|(a<quantile(a,0.001))] = median(a)
+  a = as.matrix(kpCT@assays$RNA@data)[gn,]
+  kpCT@assays$RNA@data[gn,(a>quantile(a,0.999))|(a<quantile(a,0.001))] = median(a)
+  a = as.matrix(kpAD@assays$RNA@data)[gn,]
+  kpAD@assays$RNA@data[gn,(a>quantile(a,0.999))|(a<quantile(a,0.001))] = median(a)
+}
+p1 = VlnPlot(kpHVS,plotGene,stack=TRUE,cols = rep(studyColors[1],length(plotGene))) + NoLegend() + ggtitle("Adult")
+p2 = VlnPlot(kpCT,plotGene,stack=TRUE,cols = rep(studyColors[2],length(plotGene))) + NoLegend() + ggtitle("Aged, No dementia")
+p3 = VlnPlot(kpAD,plotGene,stack=TRUE,cols = rep(studyColors[3],length(plotGene))) + NoLegend() + ggtitle("Aged, Dementia")
+grid.arrange(p1, p2, p3, ncol=3)
+ggsave("genes_violin_plots_HVS_SEAAD.pdf", plot=marrangeGrob(list(p1,p2,p3),nrow=1,ncol=3), height=7, width=14)
+```
+
+  
+```{r example gene plots, fig.height=7, fig.width=15, warning=FALSE}
+plt <- as.ggplot(function(){
+par(mfrow=c(3,length(plotGene)))
+par(mar=c(2, 2, 2, 0))
+for (gn in plotGene){
+  varx <- c(gene_diffs_permuted[[ct]][gn,],gene_diffs[[ct]][gn,])
+  varx[varx>=quantile(varx,0.995)] = NA  # clip outliers
+  gp   <- c(rep("Diff",length(gene_diffs_permuted[[ct]][gn,])),rep("Same",length(gene_diffs[[ct]][gn,])))
+  gp   <- gp[!is.na(varx)]
+  varx   <- varx[!is.na(varx)]
+  verboseBoxplot(varx,gp,main=gn,pt.cex=0.5, addScatterplot = TRUE, cex.lab=1, pch=19, cex.main = 1, cex.axis = 1,
+                 xlab="",ylab="abs(log2CPM(N1)-log2CPM(N2))",col="white",pt.col = "black")
+}
+for (gn in plotGene){
+  varx <- c(gene_diffs_permutedCT[[ct]][gn,],gene_diffsCT[[ct]][gn,])
+  varx[varx>=quantile(varx,0.995)] = NA # clip outliers
+  gp   <- c(rep("Diff",length(gene_diffs_permutedCT[[ct]][gn,])),rep("Same",length(gene_diffsCT[[ct]][gn,])))
+  gp   <- gp[!is.na(varx)]
+  varx   <- varx[!is.na(varx)]
+  verboseBoxplot(varx,gp,main=gn,pt.cex=0.5, addScatterplot = TRUE, cex.lab=1, pch=19, cex.main = 1, cex.axis = 1,
+                 xlab="",ylab="abs(log2CPM(N1)-log2CPM(N2))",col="white",pt.col = "black")
+}
+for (gn in plotGene){
+  varx <- c(gene_diffs_permutedAD[[ct]][gn,],gene_diffsAD[[ct]][gn,])
+  varx[varx>=quantile(varx,0.995)] = NA # clip outliers
+  gp   <- c(rep("Diff",length(gene_diffs_permutedAD[[ct]][gn,])),rep("Same",length(gene_diffsAD[[ct]][gn,])))
+  gp   <- gp[!is.na(varx)]
+  varx   <- varx[!is.na(varx)]
+  verboseBoxplot(varx,gp,main=gn,pt.cex=0.5, addScatterplot = TRUE, cex.lab=1, pch=19, cex.main = 1, cex.axis = 1,
+                 xlab="",ylab="abs(log2CPM(N1)-log2CPM(N2))",col="white",pt.col = "black")
+}
+})
+plt
+ggsave("exampleHighVarianceGenes_scatterplots_HVSvsSEAAD.pdf", plot=plt, height = 7, width = 15)
+```
+  
+Some neuronal genes (including some Autism spectrum genes for some reason show higher variablilty in SEA-AD, whereas immediate early genes and MALAT1 are less variable.)
+  
+  
+Output session information.  
+  
+```{r sessionInfo}
+sessionInfo()
+```
+  
+  
+
+ 
+  
